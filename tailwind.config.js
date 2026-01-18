@@ -8,14 +8,15 @@ export default {
   theme: {
     extend: {
       colors: {
-        "primary": "#1b8e9d",
-        "background-light": "#f7f7f7",
-        "background-dark": "#1a1a1a",
+        "primary": "#1f8aad",
+        "background-light": "#f9fafa",
+        "background-dark": "#121416",
+        "card-dark": "#1d2326",
         "mac-border": "rgba(0,0,0,0.08)",
         "mac-glass": "rgba(255,255,255,0.7)",
       },
       fontFamily: {
-        "display": ["Space Grotesk"]
+        "display": ["Inter", "sans-serif"]
       },
       borderRadius: {
         "DEFAULT": "0.25rem",
