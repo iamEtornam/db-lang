@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { useConnectionsStore } from "./stores/connections";
+import { useHistoryStore } from "./stores/history";
+import { useSnippetsStore } from "./stores/snippets";
 import ConnectionModal from "./components/ConnectionModal.vue";
+import QueryHistory from "./components/QueryHistory.vue";
+import SnippetManager from "./components/SnippetManager.vue";
+import ExportModal from "./components/ExportModal.vue";
+import SettingsModal from "./components/SettingsModal.vue";
+import SchemaExplorer from "./components/SchemaExplorer.vue";
+import QueryExplanation from "./components/QueryExplanation.vue";
+import PaginationControls from "./components/PaginationControls.vue";
+import DataInsights from "./components/DataInsights.vue";
+import FilterPanel, { type Filter, type ColumnInfo } from "./components/FilterPanel.vue";
 
-interface Connection {
-  id: string;
-  name: string;
-  type: string;
-  host: string;
-  port: string;
-  username: string;
-  password: string;
-  sslEnabled: boolean;
-}
+const connectionsStore = useConnectionsStore();
+const historyStore = useHistoryStore();
+const snippetsStore = useSnippetsStore();
 
 const query = ref("");
 const sql = ref("");
@@ -21,8 +26,49 @@ const error = ref("");
 const isLoading = ref(false);
 const showConfirmation = ref(false);
 const showConnectionModal = ref(false);
-const connections = ref<Connection[]>([]);
-const activeConnectionId = ref<string | null>(null);
+const showHistoryModal = ref(false);
+const showSnippetsModal = ref(false);
+const showExportModal = ref(false);
+const showSettingsModal = ref(false);
+const showSchemaExplorer = ref(false);
+const showQueryExplanation = ref(false);
+const showDataInsights = ref(false);
+const showFilterPanel = ref(false);
+const activeFilters = ref<Filter[]>([]);
+const executionStartTime = ref<number | null>(null);
+
+// Pagination state
+const currentPage = ref(1);
+const pageSize = ref(50);
+const totalCount = ref<number | null>(null);
+const hasMore = ref(false);
+const isPaginated = ref(false);
+
+// Load data on mount
+onMounted(async () => {
+  await connectionsStore.loadConnections();
+});
+
+function autoQuoteIdentifiers(sqlQuery: string): string {
+  // Auto-quote table names after FROM, JOIN, UPDATE, INTO, etc. if not already quoted
+  // This helps with reserved words like User, Order, Group, etc.
+  
+  // Pattern: FROM/JOIN/INTO/UPDATE followed by optional schema and table name
+  return sqlQuery
+    .replace(/\b(FROM|JOIN|INTO|UPDATE)\s+(\w+)\.(\w+)\b/gi, (match, keyword, schema, table) => {
+      // Already quoted? Leave it
+      if (match.includes('"') || match.includes('`')) return match;
+      return `${keyword} "${schema}"."${table}"`;
+    })
+    .replace(/\b(FROM|JOIN|INTO|UPDATE)\s+(\w+)\b/gi, (match, keyword, identifier) => {
+      // Skip keywords like SELECT, WHERE, VALUES, etc.
+      const skipWords = ['SELECT', 'WHERE', 'VALUES', 'SET', 'ON', 'USING', 'AS'];
+      if (skipWords.includes(identifier.toUpperCase())) return match;
+      // Already quoted? Leave it
+      if (match.includes('"') || match.includes('`')) return match;
+      return `${keyword} "${identifier}"`;
+    });
+}
 
 async function translateQuery() {
   if (!query.value.trim()) return;
@@ -36,7 +82,9 @@ async function translateQuery() {
     const translatedSql = await invoke("translate_to_sql", {
       query: query.value,
     });
-    sql.value = (translatedSql as string).replace(/`/g, "").replace("sql", "");
+    // Auto-quote identifiers to handle reserved words
+    const quotedSql = autoQuoteIdentifiers((translatedSql as string).trim());
+    sql.value = quotedSql;
     showConfirmation.value = true;
   } catch (err) {
     error.value = err as string;
@@ -46,8 +94,8 @@ async function translateQuery() {
   }
 }
 
-async function executeQuery() {
-  if (!activeConnection.value) {
+async function executeQuery(usePagination = true, page = 1) {
+  if (!connectionsStore.activeConnection) {
     error.value = "No active connection. Please select or create a connection.";
     return;
   }
@@ -55,39 +103,106 @@ async function executeQuery() {
   isLoading.value = true;
   results.value = "";
   error.value = "";
+  executionStartTime.value = Date.now();
+  currentPage.value = page;
 
   try {
-    const conn = activeConnection.value;
-    const connStr = buildConnectionString(conn);
+    const conn = connectionsStore.activeConnection;
+    const connStr = connectionsStore.buildConnectionString(conn);
     
-    const response = await invoke("query_db", {
-      engine: conn.type,
-      connStr: connStr,
-      query: sql.value,
-    });
-    results.value = response as string;
+    if (usePagination && sql.value.trim().toUpperCase().startsWith('SELECT')) {
+      // Use paginated query
+      interface PaginatedResult {
+        data: string;
+        total_count: number | null;
+        page: number;
+        page_size: number;
+        has_more: boolean;
+      }
+      
+      const response = await invoke<PaginatedResult>("query_db_paginated", {
+        engine: conn.db_type,
+        connStr: connStr,
+        query: sql.value,
+        page: page,
+        pageSize: pageSize.value,
+      });
+      
+      results.value = response.data;
+      totalCount.value = response.total_count;
+      hasMore.value = response.has_more;
+      isPaginated.value = true;
+    } else {
+      // Regular query for non-SELECT statements
+      const response = await invoke("query_db", {
+        engine: conn.db_type,
+        connStr: connStr,
+        query: sql.value,
+      });
+      results.value = response as string;
+      totalCount.value = null;
+      hasMore.value = false;
+      isPaginated.value = false;
+    }
+    
+    // Save to history
+    const executionTime = Date.now() - executionStartTime.value!;
+    if (page === 1) {
+      await historyStore.addToHistory({
+        connection_id: conn.id,
+        natural_query: query.value,
+        sql_query: sql.value,
+        result_count: totalCount.value || parsedResults.value.length,
+        execution_time_ms: executionTime,
+        status: 'success',
+      });
+    }
   } catch (err) {
     error.value = err as string;
+    
+    // Save error to history
+    const executionTime = executionStartTime.value ? Date.now() - executionStartTime.value : null;
+    if (connectionsStore.activeConnection && page === 1) {
+      await historyStore.addToHistory({
+        connection_id: connectionsStore.activeConnection.id,
+        natural_query: query.value,
+        sql_query: sql.value,
+        result_count: null,
+        execution_time_ms: executionTime,
+        status: 'error',
+        error_message: err as string,
+      });
+    }
   } finally {
     isLoading.value = false;
+    executionStartTime.value = null;
   }
 }
 
-function buildConnectionString(conn: Connection): string {
-  const { type, host, port, username, password } = conn;
-  
-  switch (type) {
-    case "postgres":
-      return `postgresql://${username}:${password}@${host}:${port}/postgres`;
-    case "mysql":
-      return `mysql://${username}:${password}@${host}:${port}/mysql`;
-    case "sqlite":
-      return host; // For SQLite, host is the file path
-    case "mssql":
-      return `mssql://${username}:${password}@${host}:${port}/master`;
-    default:
-      return "";
+function handlePageChange(page: number) {
+  executeQuery(true, page);
+}
+
+function handlePageSizeChange(size: number) {
+  pageSize.value = size;
+  currentPage.value = 1;
+  executeQuery(true, 1);
+}
+
+function handleSchemaGenerateQuery(generatedSql: string) {
+  sql.value = generatedSql;
+  showSchemaExplorer.value = false;
+  showConfirmation.value = true;
+}
+
+function openExplainQuery() {
+  if (sql.value.trim()) {
+    showQueryExplanation.value = true;
   }
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text);
 }
 
 const parsedResults = computed(() => {
@@ -107,36 +222,108 @@ const columns = computed(() => {
   return Object.keys(parsedResults.value[0]);
 });
 
-const activeConnection = computed(() => {
-  return connections.value.find(c => c.id === activeConnectionId.value) || null;
-});
-
-// Load connections from localStorage on mount
-onMounted(() => {
-  loadConnections();
-});
-
-function loadConnections() {
-  const stored = localStorage.getItem("db-connections");
-  if (stored) {
-    try {
-      const data = JSON.parse(stored);
-      connections.value = data.connections || [];
-      activeConnectionId.value = data.activeId || null;
-    } catch (e) {
-      console.error("Failed to load connections:", e);
+// Column info with type detection for filtering
+const columnsWithTypes = computed<ColumnInfo[]>(() => {
+  if (parsedResults.value.length === 0) return [];
+  
+  return columns.value.map(name => {
+    // Sample values to detect type
+    const sampleValues = parsedResults.value
+      .slice(0, 100)
+      .map(row => row[name])
+      .filter(v => v !== null && v !== undefined && v !== '');
+    
+    let type: ColumnInfo['type'] = 'mixed';
+    
+    if (sampleValues.length > 0) {
+      const firstValue = sampleValues[0];
+      
+      if (typeof firstValue === 'boolean' || sampleValues.every(v => v === true || v === false || v === 'true' || v === 'false')) {
+        type = 'boolean';
+      } else if (typeof firstValue === 'number' || sampleValues.every(v => !isNaN(Number(v)))) {
+        type = 'number';
+      } else if (isDateString(String(firstValue))) {
+        type = 'date';
+      } else {
+        type = 'string';
+      }
     }
-  }
+    
+    return { name, type };
+  });
+});
+
+// Check if a string looks like a date
+function isDateString(str: string): boolean {
+  const datePatterns = [
+    /^\d{4}-\d{2}-\d{2}/, // ISO
+    /^\d{2}\/\d{2}\/\d{4}/, // US
+    /^\d{2}-\d{2}-\d{4}/, // EU
+  ];
+  return datePatterns.some(p => p.test(str));
 }
 
-function saveConnections() {
-  localStorage.setItem(
-    "db-connections",
-    JSON.stringify({
-      connections: connections.value,
-      activeId: activeConnectionId.value,
-    })
-  );
+// Apply filters to parsed results
+const filteredResults = computed(() => {
+  if (activeFilters.value.length === 0) {
+    return parsedResults.value;
+  }
+  
+  return parsedResults.value.filter(row => {
+    return activeFilters.value.every(filter => {
+      const value = row[filter.column];
+      const filterValue = filter.value;
+      
+      // Handle null checks
+      if (filter.operator === 'is_null') {
+        return value === null || value === undefined || value === '';
+      }
+      if (filter.operator === 'is_not_null') {
+        return value !== null && value !== undefined && value !== '';
+      }
+      
+      // Skip if value is null for other operators
+      if (value === null || value === undefined) return false;
+      
+      const strValue = String(value).toLowerCase();
+      const strFilterValue = String(filterValue).toLowerCase();
+      
+      switch (filter.operator) {
+        case 'eq':
+          return strValue === strFilterValue;
+        case 'ne':
+          return strValue !== strFilterValue;
+        case 'contains':
+          return strValue.includes(strFilterValue);
+        case 'not_contains':
+          return !strValue.includes(strFilterValue);
+        case 'starts_with':
+          return strValue.startsWith(strFilterValue);
+        case 'ends_with':
+          return strValue.endsWith(strFilterValue);
+        case 'gt':
+          return Number(value) > Number(filterValue);
+        case 'lt':
+          return Number(value) < Number(filterValue);
+        case 'gte':
+          return Number(value) >= Number(filterValue);
+        case 'lte':
+          return Number(value) <= Number(filterValue);
+        case 'between':
+          if (Array.isArray(filterValue)) {
+            const numValue = Number(value);
+            return numValue >= Number(filterValue[0]) && numValue <= Number(filterValue[1]);
+          }
+          return false;
+        default:
+          return true;
+      }
+    });
+  });
+});
+
+function handleFiltersChange(filters: Filter[]) {
+  activeFilters.value = filters;
 }
 
 function openConnectionModal() {
@@ -147,36 +334,55 @@ function closeConnectionModal() {
   showConnectionModal.value = false;
 }
 
-function handleConnect(connectionConfig: any) {
-  const newConnection: Connection = {
-    id: Date.now().toString(),
+async function handleConnect(connectionConfig: any) {
+  await connectionsStore.addConnection({
     name: connectionConfig.name,
-    type: connectionConfig.type,
+    db_type: connectionConfig.type,
     host: connectionConfig.host,
     port: connectionConfig.port,
+    database: connectionConfig.database,
     username: connectionConfig.username,
     password: connectionConfig.password,
-    sslEnabled: connectionConfig.sslEnabled,
-  };
-
-  connections.value.push(newConnection);
-  activeConnectionId.value = newConnection.id;
-  saveConnections();
+    ssl_enabled: connectionConfig.sslEnabled,
+  });
   closeConnectionModal();
 }
 
 function switchConnection(connectionId: string) {
-  activeConnectionId.value = connectionId;
-  saveConnections();
+  connectionsStore.setActiveConnection(connectionId);
 }
 
-function deleteConnection(connectionId: string) {
-  connections.value = connections.value.filter(c => c.id !== connectionId);
-  if (activeConnectionId.value === connectionId) {
-    activeConnectionId.value = connections.value[0]?.id || null;
-  }
-  saveConnections();
+async function deleteConnection(connectionId: string) {
+  await connectionsStore.deleteConnection(connectionId);
 }
+
+function handleHistorySelect(historyItem: any) {
+  query.value = historyItem.natural_query;
+  sql.value = historyItem.sql_query;
+  showConfirmation.value = true;
+  showHistoryModal.value = false;
+}
+
+function handleSnippetSelect(snippet: any) {
+  query.value = snippet.natural_query;
+  sql.value = snippet.sql_query;
+  showConfirmation.value = true;
+  showSnippetsModal.value = false;
+}
+
+async function saveAsSnippet() {
+  if (!sql.value.trim()) return;
+  
+  const name = prompt('Enter a name for this snippet:');
+  if (!name) return;
+  
+  await snippetsStore.createSnippet({
+    name,
+    natural_query: query.value,
+    sql_query: sql.value,
+  });
+}
+
 </script>
 
 <template>
@@ -195,36 +401,36 @@ function deleteConnection(connectionId: string) {
           <div class="flex flex-col gap-1">
             <!-- Dynamic Connections List -->
             <div
-              v-if="connections.length === 0"
+              v-if="connectionsStore.connections.length === 0"
               class="px-3 py-4 text-center text-[#5d6f71] text-xs italic"
             >
               No connections yet. Click below to add one.
             </div>
             <div
-              v-for="connection in connections"
+              v-for="connection in connectionsStore.connections"
               :key="connection.id"
               @click="switchConnection(connection.id)"
               class="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors cursor-pointer group relative"
               :class="
-                connection.id === activeConnectionId
+                connection.id === connectionsStore.activeConnectionId
                   ? 'bg-primary/20 border border-primary/30'
                   : 'hover:bg-white/5'
               "
             >
               <span
                 class="material-symbols-outlined text-[20px]"
-                :class="connection.id === activeConnectionId ? 'text-primary' : 'text-[#9fb4b7] group-hover:text-white'"
+                :class="connection.id === connectionsStore.activeConnectionId ? 'text-primary' : 'text-[#9fb4b7] group-hover:text-white'"
               >
-                {{ connection.type === 'postgres' ? 'storage' : connection.type === 'mysql' ? 'dns' : 'database' }}
+                {{ connection.db_type === 'postgres' ? 'storage' : connection.db_type === 'mysql' ? 'dns' : 'database' }}
               </span>
               <p
                 class="text-sm font-medium flex-1 truncate"
-                :class="connection.id === activeConnectionId ? 'text-white' : 'text-[#9fb4b7] group-hover:text-white'"
+                :class="connection.id === connectionsStore.activeConnectionId ? 'text-white' : 'text-[#9fb4b7] group-hover:text-white'"
               >
                 {{ connection.name }}
               </p>
               <button
-                v-if="connection.id === activeConnectionId"
+                v-if="connection.id === connectionsStore.activeConnectionId"
                 @click.stop="deleteConnection(connection.id)"
                 class="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all"
                 title="Delete connection"
@@ -245,17 +451,43 @@ function deleteConnection(connectionId: string) {
         <div>
           <p class="text-[#9fb4b7] text-[10px] uppercase tracking-widest font-bold mb-4 px-2">Workspace</p>
           <div class="flex flex-col gap-1">
-            <div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group">
+            <div 
+              @click="showHistoryModal = true"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group"
+            >
               <span class="material-symbols-outlined text-[#9fb4b7] group-hover:text-white text-[20px]">history</span>
               <p class="text-[#9fb4b7] group-hover:text-white text-sm font-medium">Query History</p>
             </div>
-            <div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group">
+            <div 
+              @click="showSnippetsModal = true"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group"
+            >
               <span class="material-symbols-outlined text-[#9fb4b7] group-hover:text-white text-[20px]">bookmark</span>
               <p class="text-[#9fb4b7] group-hover:text-white text-sm font-medium">Saved Snippets</p>
             </div>
-            <div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group">
+            <div 
+              v-if="connectionsStore.activeConnection"
+              @click="showSchemaExplorer = true"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group"
+            >
+              <span class="material-symbols-outlined text-[#9fb4b7] group-hover:text-white text-[20px]">schema</span>
+              <p class="text-[#9fb4b7] group-hover:text-white text-sm font-medium">Schema Explorer</p>
+            </div>
+            <div 
+              v-if="parsedResults.length > 0"
+              @click="showDataInsights = true"
+              class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group"
+            >
               <span class="material-symbols-outlined text-[#9fb4b7] group-hover:text-white text-[20px]">analytics</span>
               <p class="text-[#9fb4b7] group-hover:text-white text-sm font-medium">Data Insights</p>
+            </div>
+            <div 
+              v-else
+              class="flex items-center gap-3 px-3 py-2 rounded-lg cursor-not-allowed opacity-50"
+            >
+              <span class="material-symbols-outlined text-[#9fb4b7] text-[20px]">analytics</span>
+              <p class="text-[#9fb4b7] text-sm font-medium">Data Insights</p>
+              <span class="text-[8px] bg-[#2a3637] text-[#5d6f71] px-1.5 py-0.5 rounded">Run query first</span>
             </div>
           </div>
         </div>
@@ -263,15 +495,21 @@ function deleteConnection(connectionId: string) {
       <div class="p-4 border-t border-[#2a3637]">
         <div class="flex items-center gap-3 p-2">
           <div
-            class="bg-center bg-no-repeat aspect-square bg-cover rounded-full size-8"
-            data-alt="User profile avatar"
-            style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDnV1S31a7HvhuWJCczFZOPHPw-nBNTNXg5J7nAI8VYvLfrHhPjAcINWn9cbhFz06p8ZmqKS4lJGXGqRlkDC-DpQs5VCimfCgjoSvB7voSiqMEpGj1zw1XTjosvfXy8ETMisWxuUJZNE8LGYKNwju55cVlmdbDkNezDWQj7sbTdWZ9fqyxKv0qlRayGhXDITat_J90AqlNBR-ydIb41ZAosgllj0pSDW4k2kZqkxeYJ83zK6Gjmip39vik8bGo3u_UNBtNGWtd-pZA");'
-          ></div>
-          <div class="flex flex-col overflow-hidden">
-            <p class="text-white text-xs font-medium truncate">Alex Rivera</p>
-            <p class="text-[#9fb4b7] text-[10px] truncate">Pro Plan</p>
+            class="bg-primary/20 rounded-full size-8 flex items-center justify-center text-primary font-bold text-sm"
+          >
+            <span class="material-symbols-outlined text-[18px]">database</span>
           </div>
-          <span class="material-symbols-outlined text-[#9fb4b7] text-[18px] ml-auto cursor-pointer">settings</span>
+          <div class="flex flex-col overflow-hidden flex-1">
+            <p class="text-white text-xs font-medium truncate">Query Studio</p>
+            <p class="text-[#9fb4b7] text-[10px] truncate">Local workspace</p>
+          </div>
+          <button 
+            @click="showSettingsModal = true"
+            class="p-1.5 hover:bg-white/10 rounded-lg transition-colors"
+            title="Settings"
+          >
+            <span class="material-symbols-outlined text-[#9fb4b7] hover:text-white text-[18px]">settings</span>
+          </button>
         </div>
       </div>
     </aside>
@@ -282,9 +520,9 @@ function deleteConnection(connectionId: string) {
         <div class="flex items-center gap-2 text-sm">
           <span class="text-[#9fb4b7]">Projects</span>
           <span class="text-[#9fb4b7]">/</span>
-          <span class="text-white font-medium">{{ activeConnection?.name || 'No Connection' }}</span>
+          <span class="text-white font-medium">{{ connectionsStore.activeConnection?.name || 'No Connection' }}</span>
           <span
-            v-if="activeConnection"
+            v-if="connectionsStore.activeConnection"
             class="ml-2 flex items-center gap-1.5 bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider"
           >
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -299,14 +537,16 @@ function deleteConnection(connectionId: string) {
           </span>
         </div>
         <div class="flex items-center gap-4">
-          <button class="p-2 text-[#9fb4b7] hover:text-white transition-colors">
-            <span class="material-symbols-outlined text-[22px]">notifications</span>
-          </button>
-          <button
-            class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-sm font-medium hover:border-primary transition-all"
+          <button 
+            v-if="sql"
+            @click="saveAsSnippet"
+            class="p-2 text-[#9fb4b7] hover:text-primary transition-colors"
+            title="Save as snippet"
           >
-            <span class="material-symbols-outlined text-[18px]">share</span>
-            Share
+            <span class="material-symbols-outlined text-[22px]">bookmark_add</span>
+          </button>
+          <button class="p-2 text-[#9fb4b7] hover:text-white transition-colors opacity-50 cursor-not-allowed" title="Coming soon">
+            <span class="material-symbols-outlined text-[22px]">share</span>
           </button>
         </div>
       </header>
@@ -365,21 +605,37 @@ function deleteConnection(connectionId: string) {
               </div>
               <div class="flex items-center gap-4">
                 <button
-                  @click="executeQuery"
+                  @click="executeQuery(true, 1)"
                   :disabled="isLoading"
                   class="text-[10px] font-bold uppercase tracking-widest text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-1"
                 >
                   <span class="material-symbols-outlined text-[14px]">play_arrow</span>
                   Run Query
                 </button>
-                <button class="text-[10px] font-bold uppercase tracking-widest text-[#9fb4b7] hover:text-white transition-colors">
+                <button 
+                  @click="openExplainQuery"
+                  class="text-[10px] font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-1"
+                >
+                  <span class="material-symbols-outlined text-[14px]">auto_awesome</span>
+                  Explain
+                </button>
+                <button 
+                  @click="copyToClipboard(sql)"
+                  class="text-[10px] font-bold uppercase tracking-widest text-[#9fb4b7] hover:text-white transition-colors"
+                >
                   Copy code
                 </button>
               </div>
             </div>
-            <div class="p-5 font-mono text-sm leading-relaxed overflow-x-auto">
+            <div class="p-5 font-mono text-sm leading-relaxed overflow-x-auto flex-1">
               <pre v-if="isLoading && !sql" class="text-slate-500 animate-pulse">Generating SQL...</pre>
-              <pre v-else><code>{{ sql }}</code></pre>
+              <textarea
+                v-else
+                v-model="sql"
+                class="w-full h-full min-h-[180px] bg-transparent border-none outline-none resize-none text-white font-mono text-sm leading-relaxed"
+                spellcheck="false"
+                placeholder="Write or paste your SQL query here..."
+              ></textarea>
             </div>
           </div>
           <!-- Explain Query Panel -->
@@ -416,22 +672,40 @@ function deleteConnection(connectionId: string) {
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-3">
               <h3 class="font-bold text-lg">Query Results</h3>
-              <span v-if="parsedResults.length" class="text-xs bg-white/5 text-[#9fb4b7] px-2 py-1 rounded">
-                {{ parsedResults.length }} rows found
+              <span v-if="filteredResults.length" class="text-xs bg-white/5 text-[#9fb4b7] px-2 py-1 rounded">
+                {{ filteredResults.length }} rows
+                <template v-if="activeFilters.length > 0 && filteredResults.length !== parsedResults.length">
+                  ({{ parsedResults.length }} total)
+                </template>
               </span>
             </div>
             <div class="flex gap-2">
               <button
-                class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/5"
+                v-if="parsedResults.length > 0"
+                @click="showDataInsights = true"
+                class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/5 hover:border-primary transition-colors"
               >
-                <span class="material-symbols-outlined text-[16px]">download</span>
-                Export CSV
+                <span class="material-symbols-outlined text-[16px]">analytics</span>
+                Insights
               </button>
               <button
-                class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/5"
+                v-if="parsedResults.length > 0"
+                @click="showExportModal = true"
+                class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/5 hover:border-primary transition-colors"
+              >
+                <span class="material-symbols-outlined text-[16px]">download</span>
+                Export
+              </button>
+              <button
+                @click="showFilterPanel = true"
+                class="flex items-center gap-2 bg-surface-dark border border-[#3d4f51] px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-white/5 hover:border-primary transition-colors"
+                :class="{ 'border-primary bg-primary/10': activeFilters.length > 0 }"
               >
                 <span class="material-symbols-outlined text-[16px]">filter_list</span>
                 Filter
+                <span v-if="activeFilters.length > 0" class="bg-primary text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                  {{ activeFilters.length }}
+                </span>
               </button>
             </div>
           </div>
@@ -444,7 +718,7 @@ function deleteConnection(connectionId: string) {
               <span class="material-symbols-outlined text-3xl mb-2">error</span>
               <p class="font-medium">{{ error }}</p>
             </div>
-            <div v-else-if="parsedResults.length" class="overflow-x-auto">
+            <div v-else-if="filteredResults.length" class="overflow-x-auto">
               <table class="w-full text-left text-sm border-collapse">
                 <thead>
                   <tr class="bg-surface-dark-alt border-b border-[#3d4f51]">
@@ -461,7 +735,7 @@ function deleteConnection(connectionId: string) {
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-[#3d4f51]">
-                  <tr v-for="(row, index) in parsedResults" :key="index" class="hover:bg-primary/5 transition-colors">
+                  <tr v-for="(row, index) in filteredResults" :key="index" class="hover:bg-primary/5 transition-colors">
                     <td
                       v-for="column in columns"
                       :key="column"
@@ -474,18 +748,24 @@ function deleteConnection(connectionId: string) {
                 </tbody>
               </table>
             </div>
-            <div v-else class="p-12 text-center text-[#587174] italic">No results found for this query.</div>
-            <div v-if="parsedResults.length" class="px-6 py-4 bg-surface-dark-alt flex items-center justify-between border-t border-[#3d4f51]">
-              <p class="text-[10px] text-[#9fb4b7] uppercase tracking-widest font-bold">Showing all {{ parsedResults.length }} rows</p>
-              <div class="flex gap-2">
-                <button class="p-1 hover:text-white text-[#9fb4b7] disabled:opacity-30" disabled>
-                  <span class="material-symbols-outlined">chevron_left</span>
-                </button>
-                <button class="p-1 hover:text-white text-[#9fb4b7]">
-                  <span class="material-symbols-outlined">chevron_right</span>
-                </button>
-              </div>
+            <div v-else-if="parsedResults.length && activeFilters.length > 0" class="p-12 text-center text-[#587174]">
+              <span class="material-symbols-outlined text-3xl mb-2 text-amber-400">filter_list_off</span>
+              <p class="italic">No results match your filters</p>
+              <button @click="activeFilters = []" class="mt-3 text-primary hover:text-primary/80 text-sm font-medium">
+                Clear all filters
+              </button>
             </div>
+            <div v-else class="p-12 text-center text-[#587174] italic">No results found for this query.</div>
+            <PaginationControls
+              v-if="filteredResults.length"
+              :current-page="currentPage"
+              :page-size="pageSize"
+              :total-count="totalCount"
+              :has-more="hasMore"
+              :loading="isLoading"
+              @page-change="handlePageChange"
+              @page-size-change="handlePageSizeChange"
+            />
           </div>
         </div>
       </div>
@@ -493,6 +773,70 @@ function deleteConnection(connectionId: string) {
 
     <!-- Connection Modal -->
     <ConnectionModal :is-open="showConnectionModal" @close="closeConnectionModal" @connect="handleConnect" />
+    
+    <!-- Query History Modal -->
+    <QueryHistory 
+      v-if="showHistoryModal" 
+      @close="showHistoryModal = false" 
+      @select-query="handleHistorySelect" 
+    />
+    
+    <!-- Snippets Modal -->
+    <SnippetManager 
+      v-if="showSnippetsModal" 
+      @close="showSnippetsModal = false" 
+      @select-snippet="handleSnippetSelect" 
+    />
+    
+    <!-- Export Modal -->
+    <ExportModal 
+      v-if="showExportModal && results" 
+      :data="results"
+      :columns="columns"
+      @close="showExportModal = false" 
+    />
+    
+    <!-- Settings Modal -->
+    <SettingsModal 
+      v-if="showSettingsModal" 
+      @close="showSettingsModal = false"
+      @save="showSettingsModal = false"
+    />
+    
+    <!-- Schema Explorer -->
+    <SchemaExplorer 
+      v-if="showSchemaExplorer && connectionsStore.activeConnection"
+      :connection-string="connectionsStore.buildConnectionString(connectionsStore.activeConnection)"
+      :engine="connectionsStore.activeConnection.db_type"
+      @close="showSchemaExplorer = false"
+      @select-table="(t) => console.log('Selected table:', t)"
+      @generate-query="handleSchemaGenerateQuery"
+    />
+    
+    <!-- Query Explanation -->
+    <QueryExplanation 
+      v-if="showQueryExplanation && sql"
+      :sql-query="sql"
+      :db-type="connectionsStore.activeConnection?.db_type"
+      @close="showQueryExplanation = false"
+    />
+    
+    <!-- Data Insights -->
+    <DataInsights 
+      v-if="showDataInsights && results"
+      :data="results"
+      :columns="columns"
+      @close="showDataInsights = false"
+    />
+    
+    <!-- Filter Panel -->
+    <FilterPanel 
+      v-if="showFilterPanel && parsedResults.length > 0"
+      :columns="columnsWithTypes"
+      :data="parsedResults"
+      @close="showFilterPanel = false"
+      @filters-change="handleFiltersChange"
+    />
   </div>
 </template>
 

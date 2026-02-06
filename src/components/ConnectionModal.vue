@@ -16,6 +16,7 @@ interface ConnectionConfig {
   type: string;
   host: string;
   port: string;
+  database: string;
   username: string;
   password: string;
   sslEnabled: boolean;
@@ -25,27 +26,32 @@ const connectionName = ref("");
 const dbType = ref("postgres");
 const host = ref("");
 const port = ref("5432");
+const database = ref("postgres");
 const username = ref("");
 const password = ref("");
 const sslEnabled = ref(true);
 
 const isSQLite = computed(() => dbType.value === "sqlite");
 
-// Watch for database type changes and update default port
+// Watch for database type changes and update default port and database
 watch(dbType, (newType) => {
   switch (newType) {
     case "postgres":
       port.value = "5432";
+      database.value = "postgres";
       break;
     case "mysql":
       port.value = "3306";
+      database.value = "mysql";
       break;
     case "mssql":
       port.value = "1433";
+      database.value = "master";
       break;
     case "sqlite":
       host.value = "";
       port.value = "";
+      database.value = "";
       break;
   }
 });
@@ -60,6 +66,7 @@ const handleConnect = () => {
     type: dbType.value,
     host: host.value,
     port: port.value,
+    database: database.value,
     username: username.value,
     password: password.value,
     sslEnabled: sslEnabled.value,
@@ -71,16 +78,16 @@ const handleCancel = () => {
   emit("close");
 };
 
-function buildConnectionString(type: string, host: string, port: string, user: string, pass: string): string {
+function buildConnectionString(type: string, hostVal: string, portVal: string, dbName: string, user: string, pass: string): string {
   switch (type) {
     case "postgres":
-      return `postgresql://${user}:${pass}@${host}:${port}/postgres`;
+      return `postgresql://${user}:${pass}@${hostVal}:${portVal}/${dbName || 'postgres'}`;
     case "mysql":
-      return `mysql://${user}:${pass}@${host}:${port}/mysql`;
+      return `mysql://${user}:${pass}@${hostVal}:${portVal}/${dbName || 'mysql'}`;
     case "sqlite":
-      return host; // For SQLite, host is the file path
+      return hostVal; // For SQLite, host is the file path
     case "mssql":
-      return `mssql://${user}:${pass}@${host}:${port}/master`;
+      return `mssql://${user}:${pass}@${hostVal}:${portVal}/${dbName || 'master'}`;
     default:
       return "";
   }
@@ -91,7 +98,7 @@ const handleTestConnection = async () => {
   testStatus.value = "idle";
   testMessage.value = "";
 
-  const connStr = buildConnectionString(dbType.value, host.value, port.value, username.value, password.value);
+  const connStr = buildConnectionString(dbType.value, host.value, port.value, database.value, username.value, password.value);
   
   if (!connStr) {
     testStatus.value = "error";
@@ -144,7 +151,7 @@ const handleTestConnection = async () => {
             <h1 class="text-xl font-bold text-gray-900 dark:text-white tracking-tight">New Database Connection</h1>
           </div>
           <p class="text-gray-500 dark:text-[#9fb4b7] text-sm font-normal">
-            Configure your instance to start querying with Gemini AI.
+            Configure your database instance to start querying.
           </p>
         </header>
 
@@ -221,6 +228,18 @@ const handleTestConnection = async () => {
                 type="text"
               />
             </div>
+          </div>
+
+          <!-- Database Name (for non-SQLite) -->
+          <div v-if="!isSQLite" class="space-y-1.5">
+            <label class="block text-sm font-medium text-gray-700 dark:text-white">Database Name</label>
+            <input
+              v-model="database"
+              class="w-full h-11 px-3.5 bg-gray-50 dark:bg-[#1d2526] border border-gray-200 dark:border-[#3d4f51] rounded-lg text-gray-900 dark:text-white focus:ring-2 focus:ring-primary/50 focus:border-primary outline-none transition-all placeholder:text-gray-400 dark:placeholder:text-[#5d6f71]"
+              :placeholder="dbType === 'postgres' ? 'postgres' : dbType === 'mysql' ? 'mysql' : 'master'"
+              type="text"
+            />
+            <p class="text-xs text-gray-500 dark:text-[#5d6f71]">The specific database to connect to</p>
           </div>
 
           <!-- Auth Row (for non-SQLite) -->
