@@ -107,12 +107,6 @@ const currentProviderModels = computed(() => {
   return suggestedModels[llmConfig.value.provider] || [];
 });
 
-const apiKeyMasked = computed(() => {
-  const key = llmConfig.value.api_key;
-  if (!key || key.length < 8) return key;
-  return key.slice(0, 4) + '...' + key.slice(-4);
-});
-
 // Cache stats
 const cacheStats = ref<CacheStats | null>(null);
 const clearingCache = ref(false);
