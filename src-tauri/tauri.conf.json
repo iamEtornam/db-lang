@@ -12,13 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "db-lang",
-        "width": 800,
-        "height": 600
+        "title": "Query Studio",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1200,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https:"
     }
   },
   "bundle": {
