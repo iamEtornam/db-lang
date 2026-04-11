@@ -1,129 +1,91 @@
-# Query Studio
+<div align="center">
+  <img src="assets/banner.png" alt="Query Studio Banner" width="100%" />
 
-**Query Studio** is an AI-powered desktop database management tool. Connect to any SQL or NoSQL database, ask questions in plain English, and get accurate queries generated using your actual database schema — then see the results instantly.
+  # 🛠️ Query Studio
 
-Built with [Tauri 2](https://tauri.app/), [Nuxt 4](https://nuxt.com/), [Shadcn Vue](https://www.shadcn-vue.com/), and Rust.
+  <p align="center">
+    <strong>A powerful, AI-driven database tool that bridges the gap between natural language and SQL.</strong>
+  </p>
 
-![Query Studio](https://img.shields.io/badge/version-0.1.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
-
----
-
-## Features
-
-- **Natural language querying** — Type a question in plain English; the AI generates the exact SQL using your live database schema
-- **Schema-aware AI** — Connects to your database, reads all tables and columns, and uses that as context so table names, column names, and relationships are always correct
-- **Multi-database support** — PostgreSQL, MySQL, MariaDB, SQLite, SQL Server, MongoDB, Redis
-- **Multiple AI providers** — Google Gemini, OpenAI, Anthropic Claude, Ollama (local), DeepSeek, Groq, or any OpenAI-compatible API
-- **Schema explorer** — Browse tables, columns, types, primary keys, foreign keys, and preview data
-- **AI data visualization** — Automatically generates the best chart type for your query results
-- **AI data insights** — Plain-English explanation of what your query results mean
-- **Query history** — Every query is saved with timing and result counts
-- **Saved snippets** — Save and reuse your favourite queries
-- **Dark/light mode** — Full theme support with system preference detection
-
----
-
-## Download
-
-Grab the latest release for your platform from the [Releases](https://github.com/iamEtornam/db-lang/releases) page.
-
-| Platform | File |
-|----------|------|
-| macOS (Apple Silicon) | `Query.Studio_*_aarch64.dmg` |
-| macOS (Intel) | `Query.Studio_*_x64.dmg` |
-| Linux | `query-studio_*_amd64.AppImage` or `.deb` |
-| Windows | `Query.Studio_*_x64-setup.exe` |
+  <p align="center">
+    <a href="https://tauri.app/">
+      <img src="https://img.shields.io/badge/Tauri-FFC131?style=for-the-badge&logo=tauri&logoColor=white" alt="Tauri">
+    </a>
+    <a href="https://vuejs.org/">
+      <img src="https://img.shields.io/badge/Vue.js-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D" alt="Vue 3">
+    </a>
+    <a href="https://www.typescriptlang.org/">
+      <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript">
+    </a>
+    <a href="https://tailwindcss.com/">
+      <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS">
+    </a>
+    <a href="https://rust-lang.org/">
+      <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+    </a>
+  </p>
+</div>
 
 ---
 
-## Development
+## 🌟 Overview
+
+**Query Studio** offers a seamless native experience for managing and querying your databases. Stop wrestling with complex SQL syntax—simply describe what you want in plain English, and let our integrated AI engine generate, explain, and execute the exact query you need.
+
+## ✨ Features
+
+- **🗣️ AI-Powered Query Generation**: Leveraging Google's **Gemini Pro**, describe your data needs (e.g., *"Find all users who signed up last week and spent over $500"*), and Query Studio instantly crafts the precise SQL.
+- **🔌 Multi-Database Support**: Connect effortlessly to **PostgreSQL**, **MySQL**, **SQLite**, and **MSSQL**.
+- **🧠 Logic Breakdown**: Don't just copy-paste code. Query Studio provides a step-by-step plain-English explanation of the generated SQL logic.
+- **⚡️ Real-Time Execution**: Run queries instantly and view your results in a responsive, sortable, and beautifully formatted data table.
+- **🔒 Secure Connections**: Your database credentials stay yours. Connections are stored and managed locally and securely.
+- **🌙 Developer-First UI**: A sleek, modern, dark-mode-first interface designed for extended focus and high productivity.
+
+## 🛠️ Tech Stack
+
+Query Studio is built using a modern, high-performance stack:
+
+- **Frontend**: [Vue 3](https://vuejs.org/) + [TypeScript](https://www.typescriptlang.org/) + [Tailwind CSS](https://tailwindcss.com/)
+- **Backend/Core**: [Rust](https://rust-lang.org/) powered by [Tauri](https://tauri.app/)
+- **AI Engine**: Google Gemini Pro (via Genkit or direct API integration)
+
+## 🚀 Getting Started
+
+Follow these steps to get a local development environment up and running.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) v22+
-- [Rust](https://rustup.rs/) (stable)
-- On Linux: `libwebkit2gtk-4.1-dev`, `libssl-dev`, `pkg-config` (see workflow for full list)
+Ensure you have the following installed on your machine:
+- **[Node.js](https://nodejs.org/)** (v18 or higher)
+- **[Rust & Cargo](https://rustup.rs/)** (Required for Tauri native bindings)
 
-### Setup
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/iamEtornam/db-lang.git
+   cd db-lang
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+### Running the App
+
+To run the application in development mode with hot-reloading enabled for both the frontend and the Rust backend:
 
 ```bash
-# Clone the repo
-git clone https://github.com/iamEtornam/db-lang.git
-cd db-lang
-
-# Install JS dependencies
-npm install
-
-# Start dev server (Tauri + Nuxt hot reload)
 npm run tauri dev
 ```
 
-### Build
+This command will spin up the Vite development server and launch the native Tauri window.
 
-```bash
-# Build for production (current platform)
-npm run tauri build
-```
+## 🤝 Contributing
 
----
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/iamEtornam/db-lang/issues) if you want to contribute.
 
-## Configuration
+## 📄 License
 
-### AI Provider
-
-Go to **Settings** in the app and configure your preferred AI provider. Query Studio supports:
-
-| Provider | Models |
-|----------|--------|
-| Google Gemini | gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
-| OpenAI | gpt-5.4, gpt-5.4-mini, gpt-4o, gpt-4o-mini |
-| Anthropic | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5 |
-| Ollama (local) | Any locally installed model |
-| DeepSeek | deepseek-chat, deepseek-reasoner |
-| Groq | llama-3.3-70b, openai/gpt-oss-120b, and more |
-| Custom | Any OpenAI-compatible endpoint |
-
-Your API key is stored locally and never sent anywhere except directly to the chosen provider.
-
----
-
-## Creating a Release
-
-Releases are built automatically by GitHub Actions when you push a version tag:
-
-```bash
-# Bump version in src-tauri/tauri.conf.json first, then:
-git add .
-git commit -m "chore: release v0.2.0"
-git tag v0.2.0
-git push origin main --tags
-```
-
-This triggers the [release workflow](.github/workflows/release.yml) which builds native binaries for:
-- macOS (Apple Silicon + Intel)
-- Linux (AppImage + .deb)
-- Windows (.exe installer)
-
-The release is created as a draft — review it on GitHub and publish when ready.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Desktop shell | Tauri 2 (Rust) |
-| Frontend | Nuxt 4, Vue 3, TypeScript |
-| UI components | Shadcn Vue, Tailwind CSS 4 |
-| State management | Pinia |
-| Database drivers | tokio-postgres, mysql_async, rusqlite, mongodb, redis |
-| AI integration | reqwest → Gemini / OpenAI / Anthropic / Ollama APIs |
-| Local storage | SQLite (via rusqlite) |
-
----
-
-## License
-
-MIT
+This project is open-source and available under the [MIT License](LICENSE).
