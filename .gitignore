@@ -41,3 +41,5 @@ Thumbs.db
 # Local data
 *.local
 dist/
+EXECUTION_PLAN.md
+IMPLEMENTATION_PLAN.md
