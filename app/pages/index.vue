@@ -17,7 +17,6 @@ const connectionsStore = useConnectionsStore()
 const historyStore = useHistoryStore()
 const {
   activeConnection,
-  activeConnectionString,
   schemaContext,
   isLoadingSchema,
   tables,
@@ -183,8 +182,7 @@ async function executeQuery(page = 1) {
 
     if (isSelect) {
       const result = await invoke<PaginatedResult>('query_db_paginated', {
-        engine: activeConnection.value.db_type,
-        connStr: activeConnectionString.value,
+        connectionId: activeConnection.value.id,
         query: generatedQuery.value,
         page,
         pageSize: 50,
@@ -205,8 +203,7 @@ async function executeQuery(page = 1) {
     }
     else {
       const data = await invoke<string>('query_db', {
-        engine: activeConnection.value.db_type,
-        connStr: activeConnectionString.value,
+        connectionId: activeConnection.value.id,
         query: generatedQuery.value,
       })
 

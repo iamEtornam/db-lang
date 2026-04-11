@@ -23,9 +23,17 @@ impl PostgresDriver {
     }
 
     async fn query_rows(&self, query: &str) -> Result<Vec<Value>, DriverError> {
+        self.query_rows_params(query, &[]).await
+    }
+
+    async fn query_rows_params(
+        &self,
+        query: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<Vec<Value>, DriverError> {
         let rows = self
             .client
-            .query(query, &[])
+            .query(query, params)
             .await
             .map_err(|e| {
                 let detail = if let Some(db_err) = e.as_db_error() {
@@ -201,7 +209,7 @@ impl DatabaseDriver for PostgresDriver {
 
     async fn get_table_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<ColumnInfo>, DriverError> {
         let schema = schema.unwrap_or("public");
-        let query = format!(
+        let query =
             "SELECT
                 c.column_name as name,
                 c.data_type,
@@ -217,7 +225,7 @@ impl DatabaseDriver for PostgresDriver {
                 FROM information_schema.table_constraints tc
                 JOIN information_schema.key_column_usage kcu
                     ON tc.constraint_name = kcu.constraint_name
-                WHERE tc.table_name = '{}' AND tc.table_schema = '{}' AND tc.constraint_type = 'PRIMARY KEY'
+                WHERE tc.table_name = $1 AND tc.table_schema = $2 AND tc.constraint_type = 'PRIMARY KEY'
             ) pk ON c.column_name = pk.column_name
             LEFT JOIN (
                 SELECT
@@ -230,14 +238,12 @@ impl DatabaseDriver for PostgresDriver {
                     ON tc.constraint_name = kcu.constraint_name
                 JOIN information_schema.constraint_column_usage ccu
                     ON tc.constraint_name = ccu.constraint_name
-                WHERE tc.table_name = '{}' AND tc.table_schema = '{}' AND tc.constraint_type = 'FOREIGN KEY'
+                WHERE tc.table_name = $1 AND tc.table_schema = $2 AND tc.constraint_type = 'FOREIGN KEY'
             ) fk ON c.column_name = fk.column_name
-            WHERE c.table_name = '{}' AND c.table_schema = '{}'
-            ORDER BY c.ordinal_position",
-            table, schema, table, schema, table, schema
-        );
+            WHERE c.table_name = $1 AND c.table_schema = $2
+            ORDER BY c.ordinal_position";
 
-        let rows = self.query_rows(&query).await?;
+        let rows = self.query_rows_params(query, &[&table, &schema]).await?;
         Ok(rows.iter().map(|row| ColumnInfo {
             name: row["name"].as_str().unwrap_or("").to_string(),
             data_type: row["data_type"].as_str().unwrap_or("").to_string(),
@@ -277,8 +283,8 @@ impl DatabaseDriver for PostgresDriver {
 
     async fn preview_table_data(&self, table: &str, schema: Option<&str>, limit: i32) -> Result<Vec<Value>, DriverError> {
         let full_name = match schema {
-            Some(s) => format!("\"{}\".\"{}\"", s, table),
-            None => format!("\"{}\"", table),
+            Some(s) => format!("{}.{}", escape_pg_identifier(s), escape_pg_identifier(table)),
+            None => escape_pg_identifier(table),
         };
         self.query_rows(&format!("SELECT * FROM {} LIMIT {}", full_name, limit)).await
     }
@@ -290,4 +296,8 @@ impl DatabaseDriver for PostgresDriver {
     fn query_language(&self) -> QueryLanguage {
         QueryLanguage::Sql
     }
+}
+
+fn escape_pg_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }

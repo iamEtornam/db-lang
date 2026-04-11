@@ -11,7 +11,7 @@ import type { ColumnInfo } from '~/types/database'
 useHead({ title: 'Schema' })
 
 const connectionsStore = useConnectionsStore()
-const { activeConnection, activeConnectionString, tables, tableColumns, isLoadingSchema } = storeToRefs(connectionsStore)
+const { activeConnection, tables, tableColumns, isLoadingSchema } = storeToRefs(connectionsStore)
 
 const selectedTableName = ref<string | null>(null)
 const activeTab = ref<'columns' | 'preview'>('columns')
@@ -80,8 +80,7 @@ async function loadPreview() {
 
   try {
     const data = await invoke<string>('preview_table_data', {
-      engine: activeConnection.value.db_type,
-      connStr: activeConnectionString.value,
+      connectionId: activeConnection.value.id,
       tableName: selectedTableName.value,
       schemaName: selectedTable.value?.schema,
       limit: 50,

@@ -30,6 +30,25 @@ impl MysqlDriver {
             .await
             .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
 
+        Self::rows_to_json(result)
+    }
+
+    async fn query_rows_params<P: Into<mysql_async::Params> + Send>(
+        &self,
+        query: &str,
+        params: P,
+    ) -> Result<Vec<Value>, DriverError> {
+        let query_str = query.to_string();
+        let mut conn = self.conn.lock().await;
+        let result: Vec<mysql_async::Row> = conn
+            .exec(&query_str, params)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        Self::rows_to_json(result)
+    }
+
+    fn rows_to_json(result: Vec<mysql_async::Row>) -> Result<Vec<Value>, DriverError> {
         let mut results: Vec<Value> = Vec::new();
 
         for row in result {
@@ -84,6 +103,10 @@ impl MysqlDriver {
         }
         Ok(results)
     }
+}
+
+fn escape_mysql_identifier(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
 }
 
 #[async_trait]
@@ -145,7 +168,7 @@ impl DatabaseDriver for MysqlDriver {
     }
 
     async fn get_table_columns(&self, table: &str, _schema: Option<&str>) -> Result<Vec<ColumnInfo>, DriverError> {
-        let query = format!(
+        let query =
             "SELECT
                 c.COLUMN_NAME as name,
                 c.DATA_TYPE as data_type,
@@ -161,12 +184,10 @@ impl DatabaseDriver for MysqlDriver {
                 AND c.COLUMN_NAME = kcu.COLUMN_NAME
                 AND c.TABLE_SCHEMA = kcu.TABLE_SCHEMA
                 AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-            WHERE c.TABLE_NAME = '{}' AND c.TABLE_SCHEMA = DATABASE()
-            ORDER BY c.ORDINAL_POSITION",
-            table
-        );
+            WHERE c.TABLE_NAME = ? AND c.TABLE_SCHEMA = DATABASE()
+            ORDER BY c.ORDINAL_POSITION";
 
-        let rows = self.query_rows(&query).await?;
+        let rows = self.query_rows_params(query, (table,)).await?;
         Ok(rows.iter().map(|row| ColumnInfo {
             name: row["name"].as_str().unwrap_or("").to_string(),
             data_type: row["data_type"].as_str().unwrap_or("").to_string(),
@@ -211,7 +232,7 @@ impl DatabaseDriver for MysqlDriver {
     }
 
     async fn preview_table_data(&self, table: &str, _schema: Option<&str>, limit: i32) -> Result<Vec<Value>, DriverError> {
-        self.query_rows(&format!("SELECT * FROM `{}` LIMIT {}", table, limit)).await
+        self.query_rows(&format!("SELECT * FROM {} LIMIT {}", escape_mysql_identifier(table), limit)).await
     }
 
     fn engine_name(&self) -> &str {

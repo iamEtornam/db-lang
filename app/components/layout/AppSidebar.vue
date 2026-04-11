@@ -15,7 +15,7 @@ import {
   SidebarSeparator,
 } from '~/components/ui/sidebar'
 import { navigationMenus, bottomMenuItems } from '~/constants/menus'
-import { getEngine, buildConnectionString } from '~/constants/engines'
+import { getEngine } from '~/constants/engines'
 import { useConnectionsStore } from '~/stores/connections'
 import type { Connection } from '~/types/database'
 import ConnectionDialog from '~/components/connection/ConnectionDialog.vue'
@@ -70,12 +70,9 @@ async function selectConnection(conn: Connection) {
   connectionsStore.setActiveConnection(conn.id)
   connectionStatuses.value[conn.id] = 'connecting'
 
-  const connStr = buildConnectionString(conn)
-
   try {
-    await invoke<boolean>('test_connection', {
-      engine: conn.db_type,
-      connStr,
+    await invoke<boolean>('test_connection_by_id', {
+      connectionId: conn.id,
     })
     connectionStatuses.value[conn.id] = 'connected'
     toast.success(`Connected to ${conn.name}`)

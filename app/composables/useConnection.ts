@@ -3,13 +3,12 @@ import { useConnectionsStore } from '~/stores/connections'
 
 export function useConnection() {
   const store = useConnectionsStore()
-  const { connections, activeConnection, activeConnectionId, activeConnectionString, isLoading, error } = storeToRefs(store)
+  const { connections, activeConnection, activeConnectionId, isLoading, error } = storeToRefs(store)
 
   return {
     connections,
     activeConnection,
     activeConnectionId,
-    activeConnectionString,
     isLoading,
     error,
     loadConnections: store.loadConnections,

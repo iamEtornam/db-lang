@@ -7,63 +7,143 @@ mod export;
 mod gemini;
 mod schema_kb;
 
-use app_db::init_app_database;
+use app_db::{init_app_database, get_app_database, DbConnectionRecord};
 use drivers::{create_driver, TableInfo, ColumnInfo, PaginatedResult};
 use std::path::PathBuf;
 
-// ============ Database Commands (new driver-based) ============
+/// Build a connection string from stored connection details.
+/// Keeps credentials on the Rust side so they never transit through the frontend.
+fn build_connection_string(conn: &DbConnectionRecord) -> String {
+    let encoded_pwd = urlencoding::encode(&conn.password);
+    let encoded_user = urlencoding::encode(&conn.username);
 
+    match conn.db_type.as_str() {
+        "postgres" => format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            encoded_user, encoded_pwd, conn.host, conn.port,
+            if conn.database.is_empty() { "postgres" } else { &conn.database }
+        ),
+        "mysql" | "mariadb" => format!(
+            "mysql://{}:{}@{}:{}/{}",
+            encoded_user, encoded_pwd, conn.host, conn.port,
+            if conn.database.is_empty() { "mysql" } else { &conn.database }
+        ),
+        "sqlite" => conn.host.clone(),
+        "mssql" => format!(
+            "mssql://{}:{}@{}:{}/{}",
+            encoded_user, encoded_pwd, conn.host, conn.port,
+            if conn.database.is_empty() { "master" } else { &conn.database }
+        ),
+        "mongodb" => {
+            if !conn.username.is_empty() && !conn.password.is_empty() {
+                format!(
+                    "mongodb://{}:{}@{}:{}/{}",
+                    encoded_user, encoded_pwd, conn.host, conn.port,
+                    if conn.database.is_empty() { "test" } else { &conn.database }
+                )
+            } else {
+                format!(
+                    "mongodb://{}:{}/{}",
+                    conn.host, conn.port,
+                    if conn.database.is_empty() { "test" } else { &conn.database }
+                )
+            }
+        }
+        "redis" => {
+            if !conn.password.is_empty() {
+                format!(
+                    "redis://:{}@{}:{}/{}",
+                    encoded_pwd, conn.host, conn.port,
+                    if conn.database.is_empty() { "0" } else { &conn.database }
+                )
+            } else {
+                format!(
+                    "redis://{}:{}/{}",
+                    conn.host, conn.port,
+                    if conn.database.is_empty() { "0" } else { &conn.database }
+                )
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Look up a saved connection and return (engine, connection_string).
+fn resolve_connection(connection_id: &str) -> Result<(String, String), String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    let connections = db.get_connections().map_err(|e| e.to_string())?;
+    let conn = connections
+        .iter()
+        .find(|c| c.id == connection_id)
+        .ok_or_else(|| format!("Connection '{}' not found", connection_id))?;
+    Ok((conn.db_type.clone(), build_connection_string(conn)))
+}
+
+// ============ Database Commands ============
+
+/// Execute a query using a saved connection ID (credentials stay on the backend).
 #[tauri::command]
-async fn query_db(engine: &str, conn_str: &str, query: &str) -> Result<String, String> {
-    let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
+async fn query_db(connection_id: &str, query: &str) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     let rows = driver.execute_query(query).await.map_err(|e| e.to_string())?;
     serde_json::to_string(&rows).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn query_db_paginated(
-    engine: &str,
-    conn_str: &str,
+    connection_id: &str,
     query: &str,
     page: i32,
     page_size: i32,
 ) -> Result<PaginatedResult, String> {
-    let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     driver.execute_query_paginated(query, page, page_size).await.map_err(|e| e.to_string())
 }
 
+/// Test connection using raw parameters (for new unsaved connections).
 #[tauri::command]
 async fn test_connection(engine: &str, conn_str: &str) -> Result<bool, String> {
     let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
     driver.test_connection().await.map_err(|e| e.to_string())
 }
 
+/// Test connection using a saved connection ID.
 #[tauri::command]
-async fn get_tables(engine: &str, conn_str: &str) -> Result<Vec<TableInfo>, String> {
-    let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
+async fn test_connection_by_id(connection_id: &str) -> Result<bool, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    driver.test_connection().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_tables(connection_id: &str) -> Result<Vec<TableInfo>, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     driver.get_tables().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_table_columns(
-    engine: &str,
-    conn_str: &str,
+    connection_id: &str,
     table_name: &str,
     schema_name: Option<&str>,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     driver.get_table_columns(table_name, schema_name).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn preview_table_data(
-    engine: &str,
-    conn_str: &str,
+    connection_id: &str,
     table_name: &str,
     schema_name: Option<&str>,
     limit: Option<i32>,
 ) -> Result<String, String> {
-    let driver = create_driver(engine, conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     let rows = driver
         .preview_table_data(table_name, schema_name, limit.unwrap_or(100))
         .await
@@ -138,11 +218,10 @@ async fn explain_data(
 #[tauri::command]
 async fn generate_schema_kb(
     connection_id: &str,
-    engine: &str,
-    conn_str: &str,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    schema_kb::generate_schema_kb(connection_id, engine, conn_str, &app)
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    schema_kb::generate_schema_kb(connection_id, &engine, &conn_str, &app)
         .await
         .map_err(|e| e.to_string())
 }
@@ -155,11 +234,10 @@ async fn get_schema_kb(connection_id: &str) -> Result<Option<schema_kb::SchemaKn
 #[tauri::command]
 async fn refresh_schema_kb(
     connection_id: &str,
-    engine: &str,
-    conn_str: &str,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    schema_kb::refresh_schema_kb(connection_id, engine, conn_str, &app)
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    schema_kb::refresh_schema_kb(connection_id, &engine, &conn_str, &app)
         .await
         .map_err(|e| e.to_string())
 }
@@ -193,6 +271,7 @@ pub fn run() {
             query_db,
             query_db_paginated,
             test_connection,
+            test_connection_by_id,
             // Schema exploration
             get_tables,
             get_table_columns,

@@ -168,13 +168,11 @@ async function saveConnection() {
       open.value = false
       resetForm()
 
-      // Test the connection and load schema
       toast.loading(`Connecting to ${result.name}...`, { id: 'connecting' })
 
       try {
-        await invoke<boolean>('test_connection', {
-          engine: result.db_type,
-          connStr: buildConnectionString(result),
+        await invoke<boolean>('test_connection_by_id', {
+          connectionId: result.id,
         })
 
         toast.success(`Connected to ${result.name}`, { id: 'connecting' })

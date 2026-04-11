@@ -119,7 +119,7 @@ impl DatabaseDriver for SqliteDriver {
     }
 
     async fn get_table_columns(&self, table: &str, _schema: Option<&str>) -> Result<Vec<ColumnInfo>, DriverError> {
-        let rows = self.query_rows(&format!("PRAGMA table_info('{}')", table)).await?;
+        let rows = self.query_rows(&format!("PRAGMA table_info({})", escape_sqlite_identifier(table))).await?;
 
         Ok(rows.iter().map(|row| ColumnInfo {
             name: row["name"].as_str().unwrap_or("").to_string(),
@@ -138,7 +138,7 @@ impl DatabaseDriver for SqliteDriver {
         let mut relationships = Vec::new();
 
         for table in &tables {
-            let fk_rows = self.query_rows(&format!("PRAGMA foreign_key_list('{}')", table.name))
+            let fk_rows = self.query_rows(&format!("PRAGMA foreign_key_list({})", escape_sqlite_identifier(&table.name)))
                 .await
                 .unwrap_or_default();
 
@@ -162,7 +162,7 @@ impl DatabaseDriver for SqliteDriver {
     }
 
     async fn preview_table_data(&self, table: &str, _schema: Option<&str>, limit: i32) -> Result<Vec<Value>, DriverError> {
-        self.query_rows(&format!("SELECT * FROM \"{}\" LIMIT {}", table, limit)).await
+        self.query_rows(&format!("SELECT * FROM {} LIMIT {}", escape_sqlite_identifier(table), limit)).await
     }
 
     fn engine_name(&self) -> &str {
@@ -172,4 +172,8 @@ impl DatabaseDriver for SqliteDriver {
     fn query_language(&self) -> QueryLanguage {
         QueryLanguage::Sql
     }
+}
+
+fn escape_sqlite_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
