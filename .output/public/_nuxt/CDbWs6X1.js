@@ -1,0 +1,1 @@
+import{_ as o}from"./DlAUqK2U.js";import{o as r,c as s,z as c}from"./Dt-cmbFe.js";const n={},t={class:"min-h-screen bg-background"};function a(e,_){return r(),s("div",t,[c(e.$slots,"default")])}const f=o(n,[["render",a]]);export{f as default};

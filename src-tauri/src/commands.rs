@@ -52,6 +52,45 @@ pub async fn get_connections() -> Result<Vec<DbConnectionRecord>, String> {
     db.get_connections().map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateConnectionRequest {
+    pub id: String,
+    pub name: String,
+    pub db_type: String,
+    pub host: String,
+    pub port: String,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub ssl_enabled: bool,
+}
+
+#[command]
+pub async fn update_connection(connection: UpdateConnectionRequest) -> Result<DbConnectionRecord, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+
+    let existing = db.get_connections().map_err(|e| e.to_string())?;
+    let original = existing.iter().find(|c| c.id == connection.id)
+        .ok_or_else(|| "Connection not found".to_string())?;
+
+    let conn_record = DbConnectionRecord {
+        id: connection.id,
+        name: connection.name,
+        db_type: connection.db_type,
+        host: connection.host,
+        port: connection.port,
+        database: connection.database,
+        username: connection.username,
+        password: connection.password,
+        ssl_enabled: connection.ssl_enabled,
+        created_at: original.created_at.clone(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    db.update_connection(&conn_record).map_err(|e| e.to_string())?;
+    Ok(conn_record)
+}
+
 #[command]
 pub async fn delete_connection_record(connection_id: String) -> Result<bool, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
@@ -294,7 +333,7 @@ pub async fn get_llm_config() -> Result<LlmConfig, String> {
         let now = chrono::Utc::now().to_rfc3339();
         Ok(LlmConfig {
             provider: "gemini".to_string(),
-            model: "gemini-pro".to_string(),
+            model: "gemini-2.5-flash".to_string(),
             api_key: String::new(),
             api_url: None,
             created_at: now.clone(),

@@ -84,7 +84,7 @@ pub struct UserSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub provider: String,         // "gemini", "openai", "anthropic", "ollama", "custom"
-    pub model: String,            // e.g. "gemini-pro", "gpt-4", "claude-3-sonnet", "llama3"
+    pub model: String,            // e.g. "gemini-2.5-flash", "gpt-4o", "claude-sonnet-4-20250514"
     pub api_key: String,          // the user's own API key
     pub api_url: Option<String>,  // custom endpoint URL (for Ollama, custom providers, etc.)
     pub created_at: String,
@@ -191,12 +191,64 @@ impl AppDatabase {
             "CREATE TABLE IF NOT EXISTS llm_config (
                 id TEXT PRIMARY KEY DEFAULT 'local',
                 provider TEXT NOT NULL DEFAULT 'gemini',
-                model TEXT NOT NULL DEFAULT 'gemini-pro',
+                model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
                 api_key TEXT NOT NULL DEFAULT '',
                 api_url TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
+            [],
+        )?;
+
+        // ---- Schema Knowledge Base tables ----
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_snapshots (
+                id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'generating',
+                summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS table_descriptions (
+                id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                schema_name TEXT,
+                table_type TEXT NOT NULL DEFAULT 'table',
+                ai_description TEXT,
+                column_metadata TEXT NOT NULL DEFAULT '[]',
+                sample_data TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (snapshot_id) REFERENCES schema_snapshots(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS relationship_descriptions (
+                id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_column TEXT NOT NULL,
+                target_table TEXT NOT NULL,
+                target_column TEXT NOT NULL,
+                relationship_type TEXT,
+                ai_description TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (snapshot_id) REFERENCES schema_snapshots(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_snapshots_connection ON schema_snapshots(connection_id)",
             [],
         )?;
 
@@ -207,7 +259,6 @@ impl AppDatabase {
         )?;
 
         // Drop old tables that are no longer needed (auth-related)
-        // We use IF EXISTS so this is safe to run even if they don't exist
         conn.execute("DROP TABLE IF EXISTS sessions", [])?;
         conn.execute("DROP TABLE IF EXISTS users", [])?;
 
@@ -264,6 +315,27 @@ impl AppDatabase {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(connections)
+    }
+
+    pub fn update_connection(&self, conn_record: &DbConnectionRecord) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows = conn.execute(
+            "UPDATE connections SET name = ?1, db_type = ?2, host = ?3, port = ?4, database_name = ?5, username = ?6, password = ?7, ssl_enabled = ?8, updated_at = ?9 WHERE id = ?10",
+            rusqlite::params![
+                &conn_record.name,
+                &conn_record.db_type,
+                &conn_record.host,
+                &conn_record.port,
+                &conn_record.database,
+                &conn_record.username,
+                &conn_record.password,
+                conn_record.ssl_enabled as i32,
+                now,
+                &conn_record.id,
+            ],
+        )?;
+        Ok(rows > 0)
     }
 
     pub fn delete_connection(&self, id: &str) -> Result<bool, AppDbError> {
@@ -533,6 +605,183 @@ impl AppDatabase {
         )?;
         Ok(())
     }
+
+    // ============ Schema Knowledge Base operations ============
+
+    pub fn upsert_schema_snapshot(&self, snap: &SchemaSnapshot) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO schema_snapshots (id, connection_id, status, summary, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               status = excluded.status,
+               summary = excluded.summary,
+               updated_at = excluded.updated_at",
+            rusqlite::params![
+                &snap.id, &snap.connection_id, &snap.status,
+                &snap.summary, &snap.created_at, &snap.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_latest_snapshot(&self, connection_id: &str) -> Result<Option<SchemaSnapshot>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, connection_id, status, summary, created_at, updated_at
+             FROM schema_snapshots WHERE connection_id = ?1
+             ORDER BY created_at DESC LIMIT 1",
+            [connection_id],
+            |row| Ok(SchemaSnapshot {
+                id: row.get(0)?,
+                connection_id: row.get(1)?,
+                status: row.get(2)?,
+                summary: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            }),
+        ).ok();
+        Ok(result)
+    }
+
+    pub fn upsert_table_description(&self, td: &TableDescriptionRecord) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO table_descriptions (id, snapshot_id, table_name, schema_name, table_type, ai_description, column_metadata, sample_data, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+               ai_description = excluded.ai_description,
+               column_metadata = excluded.column_metadata,
+               sample_data = excluded.sample_data,
+               updated_at = excluded.updated_at",
+            rusqlite::params![
+                &td.id, &td.snapshot_id, &td.table_name, &td.schema_name,
+                &td.table_type, &td.ai_description, &td.column_metadata,
+                &td.sample_data, &td.created_at, &td.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_table_description_text(&self, id: &str, description: &str) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE table_descriptions SET ai_description = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![description, now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_table_descriptions(&self, snapshot_id: &str) -> Result<Vec<TableDescriptionRecord>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, snapshot_id, table_name, schema_name, table_type, ai_description, column_metadata, sample_data, created_at, updated_at
+             FROM table_descriptions WHERE snapshot_id = ?1 ORDER BY table_name",
+        )?;
+        let records = stmt.query_map([snapshot_id], |row| {
+            Ok(TableDescriptionRecord {
+                id: row.get(0)?,
+                snapshot_id: row.get(1)?,
+                table_name: row.get(2)?,
+                schema_name: row.get(3)?,
+                table_type: row.get(4)?,
+                ai_description: row.get(5)?,
+                column_metadata: row.get(6)?,
+                sample_data: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+        Ok(records)
+    }
+
+    pub fn upsert_relationship_description(&self, rel: &RelationshipDescriptionRecord) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO relationship_descriptions
+             (id, snapshot_id, source_table, source_column, target_table, target_column, relationship_type, ai_description, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                &rel.id, &rel.snapshot_id, &rel.source_table, &rel.source_column,
+                &rel.target_table, &rel.target_column, &rel.relationship_type,
+                &rel.ai_description, &rel.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_relationship_descriptions(&self, snapshot_id: &str) -> Result<Vec<RelationshipDescriptionRecord>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, snapshot_id, source_table, source_column, target_table, target_column, relationship_type, ai_description, created_at
+             FROM relationship_descriptions WHERE snapshot_id = ?1",
+        )?;
+        let records = stmt.query_map([snapshot_id], |row| {
+            Ok(RelationshipDescriptionRecord {
+                id: row.get(0)?,
+                snapshot_id: row.get(1)?,
+                source_table: row.get(2)?,
+                source_column: row.get(3)?,
+                target_table: row.get(4)?,
+                target_column: row.get(5)?,
+                relationship_type: row.get(6)?,
+                ai_description: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+        Ok(records)
+    }
+
+    pub fn delete_snapshot_for_connection(&self, connection_id: &str) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        // Cascades to table_descriptions and relationship_descriptions
+        conn.execute(
+            "DELETE FROM schema_snapshots WHERE connection_id = ?1",
+            [connection_id],
+        )?;
+        Ok(())
+    }
+}
+
+/// Schema Snapshot model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaSnapshot {
+    pub id: String,
+    pub connection_id: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Table Description model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableDescriptionRecord {
+    pub id: String,
+    pub snapshot_id: String,
+    pub table_name: String,
+    pub schema_name: Option<String>,
+    pub table_type: String,
+    pub ai_description: Option<String>,
+    pub column_metadata: String, // JSON
+    pub sample_data: Option<String>, // JSON
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Relationship Description model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipDescriptionRecord {
+    pub id: String,
+    pub snapshot_id: String,
+    pub source_table: String,
+    pub source_column: String,
+    pub target_table: String,
+    pub target_column: String,
+    pub relationship_type: Option<String>,
+    pub ai_description: Option<String>,
+    pub created_at: String,
 }
 
 // Global database instance
