@@ -99,14 +99,26 @@ jobs:
           print('icon.ico regenerated in BMP (3.00) format')
 
       - name: Configure macOS signing
-        if: matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE != ''
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          echo "APPLE_CERTIFICATE=${{ secrets.APPLE_CERTIFICATE }}" >> $GITHUB_ENV
-          echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" >> $GITHUB_ENV
-          echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}" >> $GITHUB_ENV
-          echo "APPLE_ID=${{ secrets.APPLE_ID }}" >> $GITHUB_ENV
-          echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}" >> $GITHUB_ENV
-          echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}" >> $GITHUB_ENV
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE" >> $GITHUB_ENV
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD" >> $GITHUB_ENV
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> $GITHUB_ENV
+            echo "APPLE_ID=$APPLE_ID" >> $GITHUB_ENV
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD" >> $GITHUB_ENV
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> $GITHUB_ENV
+            echo "Signing credentials configured."
+          else
+            echo "No APPLE_CERTIFICATE secret found — skipping signing setup."
+          fi
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
