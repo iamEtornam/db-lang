@@ -55,16 +55,6 @@ export const engines: DatabaseEngine[] = [
     description: 'Lightweight file-based database',
   },
   {
-    id: 'mssql',
-    name: 'SQL Server',
-    icon: 'simple-icons:microsoftsqlserver',
-    defaultPort: 1433,
-    category: 'sql',
-    defaultDatabase: 'master',
-    placeholder: { host: 'localhost', database: 'mydb', username: 'sa' },
-    description: 'Microsoft SQL Server',
-  },
-  {
     id: 'mongodb',
     name: 'MongoDB',
     icon: 'simple-icons:mongodb',

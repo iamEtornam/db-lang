@@ -28,7 +28,7 @@ export function useSchemaKb() {
     }
   }
 
-  async function generateKb(connectionId: string, engine: string, connStr: string): Promise<void> {
+  async function generateKb(connectionId: string): Promise<void> {
     isGenerating.value = true
     progress.value = { current: 0, total: 0, currentTable: '' }
     error.value = null
@@ -44,7 +44,7 @@ export function useSchemaKb() {
     })
 
     try {
-      await invoke('generate_schema_kb', { connectionId, engine, connStr })
+      await invoke('generate_schema_kb', { connectionId })
       await getKb(connectionId)
       toast.success('Schema analyzed', {
         description: 'AI knowledge base is ready for intelligent querying',
@@ -60,8 +60,8 @@ export function useSchemaKb() {
     }
   }
 
-  async function refreshKb(connectionId: string, engine: string, connStr: string): Promise<void> {
-    await generateKb(connectionId, engine, connStr)
+  async function refreshKb(connectionId: string): Promise<void> {
+    await generateKb(connectionId)
   }
 
   async function updateTableDescription(tableDescId: string, description: string): Promise<void> {

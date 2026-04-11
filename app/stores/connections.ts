@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
 import { defineStore } from 'pinia'
-import { buildConnectionString } from '~/constants/engines'
 import type { ColumnInfo, Connection, CreateConnectionRequest, TableInfo } from '~/types/database'
 
 export const useConnectionsStore = defineStore('connections', () => {
@@ -9,7 +8,6 @@ export const useConnectionsStore = defineStore('connections', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  // Schema state: loaded tables + columns for the active connection
   const tables = ref<TableInfo[]>([])
   const tableColumns = ref<Record<string, ColumnInfo[]>>({})
   const schemaContext = ref('')
@@ -19,11 +17,6 @@ export const useConnectionsStore = defineStore('connections', () => {
   const activeConnection = computed(() =>
     connections.value.find(c => c.id === activeConnectionId.value) ?? null,
   )
-
-  const activeConnectionString = computed(() => {
-    if (!activeConnection.value) return ''
-    return buildConnectionString(activeConnection.value)
-  })
 
   async function loadConnections() {
     isLoading.value = true
@@ -124,10 +117,6 @@ export const useConnectionsStore = defineStore('connections', () => {
     const conn = activeConnection.value
     if (!conn) return false
 
-    const connStr = activeConnectionString.value
-    if (!connStr) return false
-
-    // Already loaded for this connection
     if (schemaLoadedForConnectionId.value === conn.id && tables.value.length > 0) {
       return true
     }
@@ -136,8 +125,7 @@ export const useConnectionsStore = defineStore('connections', () => {
 
     try {
       const loadedTables = await invoke<TableInfo[]>('get_tables', {
-        engine: conn.db_type,
-        connStr,
+        connectionId: conn.id,
       })
 
       tables.value = loadedTables
@@ -153,8 +141,7 @@ export const useConnectionsStore = defineStore('connections', () => {
 
         try {
           const columns = await invoke<ColumnInfo[]>('get_table_columns', {
-            engine: conn.db_type,
-            connStr,
+            connectionId: conn.id,
             tableName: table.name,
             schemaName: table.schema,
           })
@@ -202,7 +189,6 @@ export const useConnectionsStore = defineStore('connections', () => {
     connections,
     activeConnectionId,
     activeConnection,
-    activeConnectionString,
     isLoading,
     error,
     tables,

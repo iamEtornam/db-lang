@@ -7,8 +7,8 @@ import { Button } from '~/components/ui/button'
 import type { TableInfo, ColumnInfo } from '~/types/database'
 
 const props = defineProps<{
+  connectionId: string
   engine: string
-  connStr: string
 }>()
 
 const emit = defineEmits<{
@@ -38,8 +38,8 @@ const previewColumns = computed(() =>
   previewData.value.length > 0 ? Object.keys(previewData.value[0]) : [],
 )
 
-watch([() => props.engine, () => props.connStr], () => {
-  if (props.engine && props.connStr) {
+watch([() => props.connectionId, () => props.engine], () => {
+  if (props.connectionId && props.engine) {
     loadTables()
   }
 }, { immediate: true })
@@ -58,13 +58,12 @@ watch(activeTab, async (tab) => {
 })
 
 async function loadTables() {
-  if (!props.engine || !props.connStr) return
+  if (!props.connectionId || !props.engine) return
   isLoadingTables.value = true
 
   try {
     tables.value = await invoke<TableInfo[]>('get_tables', {
-      engine: props.engine,
-      connStr: props.connStr,
+      connectionId: props.connectionId,
     })
   }
   catch (err) {
@@ -80,8 +79,7 @@ async function loadColumns(table: TableInfo) {
 
   try {
     columns.value = await invoke<ColumnInfo[]>('get_table_columns', {
-      engine: props.engine,
-      connStr: props.connStr,
+      connectionId: props.connectionId,
       tableName: table.name,
       schemaName: table.schema,
     })
@@ -99,8 +97,7 @@ async function loadPreview(table: TableInfo) {
 
   try {
     const data = await invoke<string>('preview_table_data', {
-      engine: props.engine,
-      connStr: props.connStr,
+      connectionId: props.connectionId,
       tableName: table.name,
       schemaName: table.schema,
       limit: 50,

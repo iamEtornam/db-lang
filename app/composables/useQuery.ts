@@ -72,8 +72,7 @@ export function useQuery() {
 
   async function executeQuery(
     query: string,
-    engine: string,
-    connStr: string,
+    connectionId: string,
     page = 1,
     pageSize = 50,
   ): Promise<QueryResult | null> {
@@ -87,13 +86,12 @@ export function useQuery() {
 
     try {
       const isSelect = query.trim().toUpperCase().startsWith('SELECT')
-        || query.trim().startsWith('[') // MongoDB aggregation pipeline
-        || query.trim().startsWith('{') // MongoDB query
+        || query.trim().startsWith('[')
+        || query.trim().startsWith('{')
 
       if (isSelect) {
         const result = await invoke<PaginatedResult>('query_db_paginated', {
-          engine,
-          connStr,
+          connectionId,
           query,
           page,
           pageSize,
@@ -116,7 +114,7 @@ export function useQuery() {
         return queryResultData
       }
       else {
-        const data = await invoke<string>('query_db', { engine, connStr, query })
+        const data = await invoke<string>('query_db', { connectionId, query })
         const rows = JSON.parse(data) as Record<string, unknown>[]
         const columns = rows.length > 0 ? Object.keys(rows[0]) : []
 

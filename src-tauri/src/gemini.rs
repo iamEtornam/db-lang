@@ -89,9 +89,10 @@ fn get_llm_settings() -> Result<LlmConfig, LlmError> {
     }
 }
 
-/// Build the API URL for a given provider and model
+/// Build the API URL for a given provider and model.
+/// For Gemini, the API key is sent via header instead of query parameter to avoid
+/// leaking it in logs, error messages, or proxy traces.
 fn build_api_url(config: &LlmConfig) -> String {
-    // If user provides a custom URL, use that directly
     if let Some(ref url) = config.api_url {
         if !url.is_empty() {
             return url.clone();
@@ -100,8 +101,8 @@ fn build_api_url(config: &LlmConfig) -> String {
 
     match config.provider.as_str() {
         "gemini" => format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            config.model, config.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            config.model
         ),
         "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
         "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
@@ -111,9 +112,38 @@ fn build_api_url(config: &LlmConfig) -> String {
         }
         "deepseek" => "https://api.deepseek.com/v1/chat/completions".to_string(),
         "groq" => "https://api.groq.com/openai/v1/chat/completions".to_string(),
-        // Custom provider -- user must provide api_url
         _ => config.api_url.clone().unwrap_or_default(),
     }
+}
+
+/// Strip sensitive data (API keys, passwords, connection strings) from error messages
+/// before they reach the frontend.
+fn sanitize_error(msg: &str) -> String {
+    let mut sanitized = msg.to_string();
+    let patterns = ["key=", "apikey=", "api_key=", "password=", "token="];
+    for pattern in patterns {
+        if let Some(pos) = sanitized.to_lowercase().find(pattern) {
+            let start = pos + pattern.len();
+            if let Some(end) = sanitized[start..].find(|c: char| c == '&' || c == ' ' || c == '"' || c == '\'') {
+                sanitized.replace_range(start..start + end, "***");
+            } else {
+                sanitized.truncate(start);
+                sanitized.push_str("***");
+            }
+        }
+    }
+    let conn_prefixes = ["postgresql://", "postgres://", "mysql://", "mongodb://", "redis://"];
+    for prefix in conn_prefixes {
+        if let Some(pos) = sanitized.find(prefix) {
+            if let Some(end) = sanitized[pos..].find(|c: char| c == ' ' || c == '"' || c == '\'') {
+                sanitized.replace_range(pos..pos + end, "[connection-string-redacted]");
+            } else {
+                sanitized.truncate(pos);
+                sanitized.push_str("[connection-string-redacted]");
+            }
+        }
+    }
+    sanitized
 }
 
 /// Build the request body for a given provider
@@ -231,10 +261,9 @@ async fn call_llm_api(prompt: &str) -> Result<String, LlmError> {
     let client = reqwest::Client::new();
     let mut request = client.post(&url).json(&body);
 
-    // Add auth headers based on provider
     match config.provider.as_str() {
         "gemini" => {
-            // Gemini uses API key in URL, no extra header needed
+            request = request.header("x-goog-api-key", &config.api_key);
         }
         "openai" | "deepseek" | "groq" => {
             request = request.header("Authorization", format!("Bearer {}", config.api_key));
@@ -244,11 +273,8 @@ async fn call_llm_api(prompt: &str) -> Result<String, LlmError> {
                 .header("x-api-key", &config.api_key)
                 .header("anthropic-version", "2023-06-01");
         }
-        "ollama" => {
-            // Ollama typically doesn't need auth
-        }
+        "ollama" => {}
         _ => {
-            // For custom providers, add Bearer token by default
             if !config.api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", config.api_key));
             }
@@ -258,14 +284,14 @@ async fn call_llm_api(prompt: &str) -> Result<String, LlmError> {
     let response = request
         .send()
         .await
-        .map_err(|e| LlmError::ApiRequestFailed(e.to_string()))?;
+        .map_err(|e| LlmError::ApiRequestFailed(sanitize_error(&e.to_string())))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
         return Err(LlmError::ApiRequestFailed(format!(
             "API returned status {}: {}",
-            status, error_text
+            status, sanitize_error(&error_text)
         )));
     }
 
@@ -280,11 +306,32 @@ async fn call_llm_api(prompt: &str) -> Result<String, LlmError> {
 // ============ Utility ============
 
 fn contains_destructive_keywords(query: &str) -> bool {
-    let destructive_keywords = ["DROP", "DELETE", "UPDATE", "TRUNCATE", "ALTER"];
-    let upper_query = query.to_uppercase();
+    let destructive_keywords = [
+        "DROP", "DELETE", "UPDATE", "TRUNCATE", "ALTER", "INSERT",
+        "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
+    ];
+    let normalized = query
+        .replace("/*", " ").replace("*/", " ")
+        .replace("--", " ");
+    let upper_query = normalized.to_uppercase();
     destructive_keywords
         .iter()
-        .any(|&keyword| upper_query.contains(keyword))
+        .any(|&keyword| {
+            upper_query.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|word| word == keyword)
+        })
+}
+
+/// Validates that a query is read-only (SELECT, SHOW, DESCRIBE, EXPLAIN, WITH, PRAGMA).
+/// Used for AI-generated queries to prevent unintended mutations.
+fn is_read_only_query(query: &str) -> bool {
+    let trimmed = query.trim()
+        .trim_start_matches("```sql")
+        .trim_start_matches("```")
+        .trim();
+    let upper = trimmed.to_uppercase();
+    let first_word = upper.split_whitespace().next().unwrap_or("");
+    matches!(first_word, "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "WITH" | "PRAGMA")
 }
 
 /// Public wrapper so schema_kb.rs can call the LLM
@@ -353,11 +400,10 @@ Write a single SQL query that answers the question using ONLY the tables and col
         .trim()
         .to_string();
 
-    if contains_destructive_keywords(&sql_query) {
+    if !is_read_only_query(&sql_query) || contains_destructive_keywords(&sql_query) {
         return Err(LlmError::DestructiveQuery(sql_query));
     }
 
-    // Post-process: fix any wrong-case table name references using known exact names
     sql_query = fix_table_name_casing(&sql_query, table_names, engine);
 
     Ok(sql_query)
@@ -431,7 +477,7 @@ Rules:
         .trim()
         .to_string();
 
-    if contains_destructive_keywords(&sql_query) {
+    if !is_read_only_query(&sql_query) || contains_destructive_keywords(&sql_query) {
         return Err(LlmError::DestructiveQuery(sql_query));
     }
 
@@ -655,7 +701,11 @@ Only return the query, no markdown, no explanation."#,
         query
     };
 
-    if contains_destructive_keywords(&query) {
+    let is_sql_engine = !matches!(engine, "mongodb" | "redis");
+    if is_sql_engine && (!is_read_only_query(&query) || contains_destructive_keywords(&query)) {
+        return Err(LlmError::DestructiveQuery(query));
+    }
+    if !is_sql_engine && contains_destructive_keywords(&query) {
         return Err(LlmError::DestructiveQuery(query));
     }
 

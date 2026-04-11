@@ -39,4 +39,5 @@ async-trait = "0.1"
 mongodb = "3"
 redis = { version = "0.27", features = ["tokio-comp", "aio"] }
 url = "2.5"
+urlencoding = "2.1"
 

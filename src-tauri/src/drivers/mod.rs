@@ -142,18 +142,27 @@ pub async fn create_driver(
 
 pub fn quote_identifier(engine: &str, name: &str, schema: Option<&str>) -> String {
     match engine {
-        "postgres" | "mssql" => match schema {
-            Some(s) => format!("\"{}\".\"{}\"", s, name),
-            None => format!("\"{}\"", name),
-        },
-        "mysql" | "mariadb" => match schema {
-            Some(s) => format!("`{}`.`{}`", s, name),
-            None => format!("`{}`", name),
-        },
-        _ => match schema {
-            Some(s) => format!("{}.{}", s, name),
-            None => name.to_string(),
-        },
+        "postgres" | "mssql" => {
+            let escaped_name = name.replace('"', "\"\"");
+            match schema {
+                Some(s) => format!("\"{}\".\"{}\"", s.replace('"', "\"\""), escaped_name),
+                None => format!("\"{}\"", escaped_name),
+            }
+        }
+        "mysql" | "mariadb" => {
+            let escaped_name = name.replace('`', "``");
+            match schema {
+                Some(s) => format!("`{}`.`{}`", s.replace('`', "``"), escaped_name),
+                None => format!("`{}`", escaped_name),
+            }
+        }
+        _ => {
+            let escaped_name = name.replace('"', "\"\"");
+            match schema {
+                Some(s) => format!("\"{}\".\"{}\"", s.replace('"', "\"\""), escaped_name),
+                None => format!("\"{}\"", escaped_name),
+            }
+        }
     }
 }
 
