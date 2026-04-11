@@ -44,3 +44,4 @@ dist/
 EXECUTION_PLAN.md
 IMPLEMENTATION_PLAN.md
 dist
+.output/*
