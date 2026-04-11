@@ -64,40 +64,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
 
-      - name: Fix icon.ico for Windows RC compiler
-        if: matrix.platform == 'windows-latest'
-        shell: python
-        run: |
-          import struct, io
-          from PIL import Image
-
-          def make_bmp_ico(source, dest, sizes=(16, 24, 32, 48, 64, 128)):
-              src = Image.open(source).convert('RGBA')
-              entries = []
-              for size in sizes:
-                  img = src.resize((size, size), Image.LANCZOS)
-                  buf = io.BytesIO()
-                  img.save(buf, format='BMP')
-                  # Strip the 14-byte BITMAPFILEHEADER; ICO stores raw DIB data
-                  entries.append((size, buf.getvalue()[14:]))
-
-              count = len(entries)
-              header = struct.pack('<HHH', 0, 1, count)
-              dir_offset = 6 + count * 16
-
-              directory = b''
-              image_data = b''
-              for size, dib in entries:
-                  img_offset = dir_offset + len(image_data)
-                  directory += struct.pack('<BBBBHHII', size, size, 0, 0, 1, 32, len(dib), img_offset)
-                  image_data += dib
-
-              with open(dest, 'wb') as f:
-                  f.write(header + directory + image_data)
-
-          make_bmp_ico('src-tauri/icons/icon.png', 'src-tauri/icons/icon.ico')
-          print('icon.ico regenerated in BMP (3.00) format')
-
       - name: Configure macOS signing
         if: matrix.platform == 'macos-latest'
         env:
