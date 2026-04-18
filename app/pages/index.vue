@@ -30,7 +30,8 @@ const isTranslating = ref(false)
 const isExecuting = ref(false)
 const queryResult = ref<QueryResult | null>(null)
 const queryError = ref<string | null>(null)
-const activeResultTab = ref<'table' | 'chart' | 'insights'>('table')
+const activeResultTab = ref<'table' | 'chart' | 'insights' | 'watch'>('table')
+const isRtdbConnection = computed(() => activeConnection.value?.db_type === 'firebase_rtdb')
 const showSettingsPrompt = ref(false)
 
 // Chart state
@@ -406,7 +407,7 @@ function goToSettings() {
     </div>
 
     <!-- Results -->
-    <div v-else-if="queryResult || isExecuting" class="flex-1 overflow-hidden flex flex-col min-h-0">
+    <div v-else-if="queryResult || isExecuting || isRtdbConnection" class="flex-1 overflow-hidden flex flex-col min-h-0">
       <Tabs v-model="activeResultTab" class="flex-1 flex flex-col overflow-hidden">
         <TabsList class="shrink-0">
           <TabsTrigger value="table">
@@ -423,6 +424,10 @@ function goToSettings() {
           <TabsTrigger value="insights">
             <Icon name="lucide:sparkles" class="size-3.5 mr-1.5" />
             Insights
+          </TabsTrigger>
+          <TabsTrigger v-if="isRtdbConnection" value="watch">
+            <Icon name="lucide:radio" class="size-3.5 mr-1.5" />
+            Watch
           </TabsTrigger>
         </TabsList>
 
@@ -629,6 +634,11 @@ function goToSettings() {
               Explain Data
             </Button>
           </div>
+        </TabsContent>
+
+        <!-- Watch tab (RTDB only) -->
+        <TabsContent v-if="isRtdbConnection && activeConnection" value="watch" class="flex-1 overflow-hidden mt-2">
+          <RtdbWatchPanel :connection-id="activeConnection.id" />
         </TabsContent>
       </Tabs>
     </div>

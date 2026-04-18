@@ -17,6 +17,8 @@ pub struct CreateConnectionRequest {
     pub username: String,
     pub password: String,
     pub ssl_enabled: bool,
+    #[serde(default)]
+    pub auth_json: String,
 }
 
 #[command]
@@ -36,6 +38,7 @@ pub async fn save_connection(
         username: connection.username,
         password: connection.password,
         ssl_enabled: connection.ssl_enabled,
+        auth_json: connection.auth_json,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -63,6 +66,8 @@ pub struct UpdateConnectionRequest {
     pub username: String,
     pub password: String,
     pub ssl_enabled: bool,
+    #[serde(default)]
+    pub auth_json: String,
 }
 
 #[command]
@@ -83,6 +88,7 @@ pub async fn update_connection(connection: UpdateConnectionRequest) -> Result<Db
         username: connection.username,
         password: connection.password,
         ssl_enabled: connection.ssl_enabled,
+        auth_json: connection.auth_json,
         created_at: original.created_at.clone(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };

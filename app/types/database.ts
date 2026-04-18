@@ -8,6 +8,7 @@ export interface Connection {
   username: string
   password: string
   ssl_enabled: boolean
+  auth_json: string
   created_at: string
   updated_at: string
 }
@@ -21,6 +22,7 @@ export interface CreateConnectionRequest {
   username: string
   password: string
   ssl_enabled: boolean
+  auth_json?: string
 }
 
 export interface TableInfo {

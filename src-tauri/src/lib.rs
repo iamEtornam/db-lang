@@ -9,7 +9,40 @@ mod schema_kb;
 
 use app_db::{init_app_database, get_app_database, DbConnectionRecord};
 use drivers::{create_driver, TableInfo, ColumnInfo, PaginatedResult};
+use drivers::firebase_auth::FirebaseConnBlob;
 use std::path::PathBuf;
+
+/// Replace the Atlas-style `<db_password>` (and legacy `<password>`)
+/// placeholders in a MongoDB URI with the URL-encoded password. If no
+/// password is provided the URI is returned unchanged.
+fn substitute_mongo_password_placeholder(uri: &str, password: &str) -> String {
+    if password.is_empty() {
+        return uri.to_string();
+    }
+    let encoded = urlencoding::encode(password).into_owned();
+    let mut out = String::with_capacity(uri.len());
+    let mut rest = uri;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        if let Some(end) = tail.find('>') {
+            let token = &tail[1..end];
+            let lower = token.to_ascii_lowercase();
+            if lower == "db_password" || lower == "password" {
+                out.push_str(&encoded);
+            } else {
+                out.push_str(&tail[..=end]);
+            }
+            rest = &tail[end + 1..];
+        } else {
+            out.push_str(tail);
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Build a connection string from stored connection details.
 /// Keeps credentials on the Rust side so they never transit through the frontend.
@@ -35,7 +68,14 @@ fn build_connection_string(conn: &DbConnectionRecord) -> String {
             if conn.database.is_empty() { "master" } else { &conn.database }
         ),
         "mongodb" => {
-            if !conn.username.is_empty() && !conn.password.is_empty() {
+            // If the user pasted a full URI (`mongodb://` or `mongodb+srv://`),
+            // pass it through verbatim and only substitute the `<db_password>`
+            // placeholder Atlas embeds in copied connection strings.
+            let trimmed = conn.host.trim();
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("mongodb://") || lower.starts_with("mongodb+srv://") {
+                substitute_mongo_password_placeholder(trimmed, &conn.password)
+            } else if !conn.username.is_empty() && !conn.password.is_empty() {
                 format!(
                     "mongodb://{}:{}@{}:{}/{}",
                     encoded_user, encoded_pwd, conn.host, conn.port,
@@ -63,6 +103,28 @@ fn build_connection_string(conn: &DbConnectionRecord) -> String {
                     if conn.database.is_empty() { "0" } else { &conn.database }
                 )
             }
+        }
+        "firestore" => {
+            let blob = FirebaseConnBlob {
+                auth_json: conn.auth_json.clone(),
+                project_id: conn.username.clone(),
+                database_url: String::new(),
+                firestore_db_id: if conn.database.is_empty() {
+                    "(default)".to_string()
+                } else {
+                    conn.database.clone()
+                },
+            };
+            blob.encode()
+        }
+        "firebase_rtdb" => {
+            let blob = FirebaseConnBlob {
+                auth_json: conn.auth_json.clone(),
+                project_id: conn.username.clone(),
+                database_url: conn.host.clone(),
+                firestore_db_id: String::new(),
+            };
+            blob.encode()
         }
         _ => String::new(),
     }
@@ -247,6 +309,60 @@ async fn update_table_description(table_desc_id: &str, description: &str) -> Res
     schema_kb::update_table_description(table_desc_id, description).map_err(|e| e.to_string())
 }
 
+// ============ Firebase helpers ============
+
+/// Build the base64-encoded `firebase://...` connection string used by the
+/// firestore / firebase_rtdb drivers. Called from the frontend "Test" button
+/// before invoking `test_connection`, so that unsaved Firebase connections can
+/// be exercised without first persisting them.
+#[tauri::command]
+fn build_firebase_conn_str(
+    auth_json: &str,
+    database_url: Option<&str>,
+    firestore_db_id: Option<&str>,
+) -> Result<String, String> {
+    let project_id = serde_json::from_str::<serde_json::Value>(auth_json)
+        .ok()
+        .and_then(|v| v.get("project_id").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    let blob = FirebaseConnBlob {
+        auth_json: auth_json.to_string(),
+        project_id,
+        database_url: database_url.unwrap_or("").to_string(),
+        firestore_db_id: firestore_db_id.unwrap_or("").to_string(),
+    };
+    Ok(blob.encode())
+}
+
+// ============ Realtime Database Streaming ============
+
+#[tauri::command]
+async fn rtdb_subscribe(
+    connection_id: &str,
+    path: &str,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err("rtdb_subscribe is only supported for firebase_rtdb connections".into());
+    }
+
+    let blob = FirebaseConnBlob::decode(&conn_str).map_err(|e| e.to_string())?;
+    let sa = drivers::firebase_auth::ServiceAccount::from_json(&blob.auth_json)
+        .map_err(|e| e.to_string())?;
+    let auth = std::sync::Arc::new(drivers::firebase_auth::FirebaseAuth::new(sa));
+
+    drivers::firebase_rtdb::subscribe_to_path(&blob.database_url, &auth, path, app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rtdb_unsubscribe(sub_id: &str) -> Result<(), String> {
+    drivers::firebase_rtdb::unsubscribe(sub_id).map_err(|e| e.to_string())
+}
+
 // ============ App Setup ============
 
 fn get_app_data_dir() -> PathBuf {
@@ -316,6 +432,11 @@ pub fn run() {
             // Export
             export::export_data,
             export::get_export_columns,
+            // Firebase helpers
+            build_firebase_conn_str,
+            // Realtime Database streaming
+            rtdb_subscribe,
+            rtdb_unsubscribe,
             // Cache and pool management
             connection_pool::get_cache_stats,
             connection_pool::get_pool_stats,

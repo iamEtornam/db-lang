@@ -346,28 +346,54 @@ pub fn is_llm_configured() -> bool {
 
 // ============ Public API (Tauri Commands) ============
 
-/// Translate with full schema context passed from the frontend
-pub async fn translate_with_schema(
+/// What query dialect is appropriate for the given engine. Used both to pick a
+/// prompt template and to decide which post-processing rules apply.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QueryDialect {
+    Sql,
+    Mongo,
+    Redis,
+    Firestore,
+    FirebaseRtdb,
+}
+
+impl QueryDialect {
+    pub fn for_engine(engine: &str) -> Self {
+        match engine {
+            "mongodb" => QueryDialect::Mongo,
+            "redis" => QueryDialect::Redis,
+            "firestore" => QueryDialect::Firestore,
+            "firebase_rtdb" => QueryDialect::FirebaseRtdb,
+            _ => QueryDialect::Sql,
+        }
+    }
+
+    pub fn is_sql(&self) -> bool {
+        matches!(self, QueryDialect::Sql)
+    }
+}
+
+fn build_translation_prompt(
+    engine: &str,
+    dialect: &QueryDialect,
     query: &str,
     schema_context: &str,
     table_names: &[String],
-    engine: &str,
-) -> Result<String, LlmError> {
-    let quote = |name: &str| match engine {
-        "mysql" | "mariadb" => format!("`{}`", name),
-        "mssql" => format!("[{}]", name),
-        _ => format!("\"{}\"", name),
-    };
-
-    // Build the exact table name list — this is the most important part
-    let exact_tables: Vec<String> = table_names
-        .iter()
-        .map(|t| format!("  - {} (use EXACTLY this spelling and casing)", quote(t)))
-        .collect();
-    let exact_tables_str = exact_tables.join("\n");
-
-    let prompt = format!(
-        r#"You are a {engine} database expert generating SQL queries.
+) -> String {
+    match dialect {
+        QueryDialect::Sql => {
+            let quote = |name: &str| match engine {
+                "mysql" | "mariadb" => format!("`{}`", name),
+                "mssql" => format!("[{}]", name),
+                _ => format!("\"{}\"", name),
+            };
+            let exact_tables: Vec<String> = table_names
+                .iter()
+                .map(|t| format!("  - {} (use EXACTLY this spelling and casing)", quote(t)))
+                .collect();
+            let exact_tables_str = exact_tables.join("\n");
+            format!(
+                r#"You are a {engine} database expert generating SQL queries.
 
 ## EXACT TABLE NAMES IN THIS DATABASE (copy character-for-character, including case):
 {exact_tables_str}
@@ -384,29 +410,131 @@ Write a single SQL query that answers the question using ONLY the tables and col
 - Use the exact table name spelling (e.g. if the table is "User", write "User", NOT "users" or "Users")
 - Quote all identifiers
 - Return ONLY the raw SQL query with no explanation, no markdown, no code fences"#,
-        engine = engine,
-        exact_tables_str = exact_tables_str,
-        schema_context = schema_context,
-        query = query,
-    );
+            )
+        }
+        QueryDialect::Firestore => {
+            let exact_collections: String = table_names
+                .iter()
+                .map(|t| format!("  - {} (use EXACTLY this spelling and casing)", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                r#"You are a Firebase Firestore expert. Convert the question into a Firestore query in the project's compact format.
 
-    let sql_query = call_llm_api(&prompt).await?;
+## EXACT COLLECTION NAMES IN THIS DATABASE (copy character-for-character):
+{exact_collections}
 
-    let mut sql_query = sql_query
-        .trim()
+## Schema:
+{schema_context}
+
+## Question to answer:
+"{query}"
+
+## Output format:
+- To list every document in a collection, output the collection name only:
+    Profiles
+- To filter / order / limit, output the collection name, then a dot, then a JSON object with any of these keys:
+    where, orderBy, limit, offset, select
+  Each follows the Firestore REST `structuredQuery` shape. Example:
+    Profiles.{{"where":{{"fieldFilter":{{"field":{{"fieldPath":"age"}},"op":"GREATER_THAN","value":{{"integerValue":"30"}}}}}},"limit":10}}
+
+Rules:
+- DO NOT generate SQL. Firestore does not understand SQL.
+- Use ONLY collection names from the list above.
+- Return ONLY the query, no markdown, no code fences, no explanation."#,
+            )
+        }
+        QueryDialect::FirebaseRtdb => {
+            let exact_paths: String = table_names
+                .iter()
+                .map(|t| format!("  - /{}", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                r#"You are a Firebase Realtime Database expert. Convert the question into an RTDB path query.
+
+## EXACT TOP-LEVEL PATHS:
+{exact_paths}
+
+## Schema:
+{schema_context}
+
+## Question to answer:
+"{query}"
+
+## Output format:
+- A path like `users` or `messages/123`.
+- Optionally followed by `?orderBy="$key"&limitToFirst=20` style URL params (use Firebase REST query syntax).
+
+Rules:
+- DO NOT generate SQL. Realtime Database does not understand SQL.
+- Use ONLY paths derived from the top-level keys above.
+- Return ONLY the path/query, no markdown, no code fences, no explanation."#,
+            )
+        }
+        QueryDialect::Mongo => format!(
+            r#"You are a MongoDB expert. Convert the question into a MongoDB query in the project's compact format.
+
+## Schema:
+{schema_context}
+
+## Question:
+"{query}"
+
+## Output format:
+- `collectionName` to scan a collection
+- `collectionName.[{{...stage...}}, ...]` to run an aggregation pipeline (JSON array)
+
+Return ONLY the query, no markdown, no explanation."#,
+        ),
+        QueryDialect::Redis => format!(
+            r#"You are a Redis expert. Convert the question into one or more Redis commands.
+
+## Schema:
+{schema_context}
+
+## Question:
+"{query}"
+
+Return ONLY the commands (one per line), no markdown, no explanation."#,
+        ),
+    }
+}
+
+fn strip_codefences(s: &str) -> String {
+    s.trim()
         .trim_start_matches("```sql")
+        .trim_start_matches("```javascript")
+        .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim()
-        .to_string();
+        .to_string()
+}
 
-    if !is_read_only_query(&sql_query) || contains_destructive_keywords(&sql_query) {
-        return Err(LlmError::DestructiveQuery(sql_query));
+/// Translate with full schema context passed from the frontend
+pub async fn translate_with_schema(
+    query: &str,
+    schema_context: &str,
+    table_names: &[String],
+    engine: &str,
+) -> Result<String, LlmError> {
+    let dialect = QueryDialect::for_engine(engine);
+    let prompt = build_translation_prompt(engine, &dialect, query, schema_context, table_names);
+
+    let raw = call_llm_api(&prompt).await?;
+    let mut translated = strip_codefences(&raw);
+
+    if dialect.is_sql() {
+        if !is_read_only_query(&translated) || contains_destructive_keywords(&translated) {
+            return Err(LlmError::DestructiveQuery(translated));
+        }
+        translated = fix_table_name_casing(&translated, table_names, engine);
+    } else if contains_destructive_keywords(&translated) {
+        return Err(LlmError::DestructiveQuery(translated));
     }
 
-    sql_query = fix_table_name_casing(&sql_query, table_names, engine);
-
-    Ok(sql_query)
+    Ok(translated)
 }
 
 /// Correct any table names in the SQL that differ only in case from known table names
@@ -604,6 +732,8 @@ pub async fn translate_to_query_with_kb(
     let query_language = match engine {
         "mongodb" => "MongoDB Aggregation Pipeline (JSON array)",
         "redis" => "Redis commands",
+        "firestore" => "Firestore compact query (collectionName or collectionName.{structuredQuery JSON})",
+        "firebase_rtdb" => "Firebase Realtime Database path (e.g. users or messages?orderBy=\"$key\"&limitToFirst=20)",
         _ => "SQL",
     };
 
@@ -614,6 +744,8 @@ pub async fn translate_to_query_with_kb(
         "mssql" => "T-SQL (SQL Server) dialect.",
         "mongodb" => "MongoDB aggregation pipeline as JSON array.",
         "redis" => "Redis commands, one per line.",
+        "firestore" => "Firestore: collection name only, OR collectionName.{structuredQuery JSON}. Never SQL.",
+        "firebase_rtdb" => "Realtime DB REST path syntax. Never SQL.",
         _ => "Standard SQL.",
     };
 
@@ -701,7 +833,7 @@ Only return the query, no markdown, no explanation."#,
         query
     };
 
-    let is_sql_engine = !matches!(engine, "mongodb" | "redis");
+    let is_sql_engine = !matches!(engine, "mongodb" | "redis" | "firestore" | "firebase_rtdb");
     if is_sql_engine && (!is_read_only_query(&query) || contains_destructive_keywords(&query)) {
         return Err(LlmError::DestructiveQuery(query));
     }
@@ -712,6 +844,8 @@ Only return the query, no markdown, no explanation."#,
     let ql = match engine {
         "mongodb" => "mql",
         "redis" => "redis",
+        "firestore" => "firestore",
+        "firebase_rtdb" => "firebase_rtdb",
         _ => "sql",
     };
 
@@ -853,4 +987,82 @@ Return only the SQL queries, one per line, no explanations. Include:
         .collect();
 
     Ok(queries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reproduces the user's bug: a Firestore connection produced
+    /// `SELECT * FROM "Profiles"`. Root cause was that the engine name
+    /// "firestore" fell through to the SQL prompt branch.
+    #[test]
+    fn firestore_engine_does_not_dispatch_to_sql_dialect() {
+        let dialect = QueryDialect::for_engine("firestore");
+        assert_eq!(dialect, QueryDialect::Firestore);
+        assert!(!dialect.is_sql(), "firestore must not be treated as SQL");
+    }
+
+    #[test]
+    fn firebase_rtdb_engine_does_not_dispatch_to_sql_dialect() {
+        let dialect = QueryDialect::for_engine("firebase_rtdb");
+        assert_eq!(dialect, QueryDialect::FirebaseRtdb);
+        assert!(!dialect.is_sql());
+    }
+
+    #[test]
+    fn known_sql_engines_still_use_sql_dialect() {
+        for e in ["postgres", "mysql", "mariadb", "sqlite", "mssql", ""] {
+            assert!(
+                QueryDialect::for_engine(e).is_sql(),
+                "engine {} should be SQL",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn firestore_prompt_does_not_ask_for_sql() {
+        let prompt = build_translation_prompt(
+            "firestore",
+            &QueryDialect::Firestore,
+            "list all profiles",
+            "schema",
+            &["Profiles".to_string()],
+        );
+        assert!(
+            !prompt.to_uppercase().contains("SELECT *"),
+            "Firestore prompt must not contain SQL examples"
+        );
+        assert!(
+            prompt.contains("DO NOT generate SQL"),
+            "Firestore prompt should explicitly forbid SQL"
+        );
+        assert!(prompt.contains("Profiles"), "must include collection names");
+    }
+
+    #[test]
+    fn firebase_rtdb_prompt_does_not_ask_for_sql() {
+        let prompt = build_translation_prompt(
+            "firebase_rtdb",
+            &QueryDialect::FirebaseRtdb,
+            "list all profiles",
+            "schema",
+            &["profiles".to_string()],
+        );
+        assert!(prompt.contains("DO NOT generate SQL"));
+        assert!(prompt.contains("/profiles"));
+    }
+
+    #[test]
+    fn sql_prompt_still_built_for_postgres() {
+        let prompt = build_translation_prompt(
+            "postgres",
+            &QueryDialect::Sql,
+            "list all profiles",
+            "schema",
+            &["Profiles".to_string()],
+        );
+        assert!(prompt.contains("SQL queries"));
+    }
 }
