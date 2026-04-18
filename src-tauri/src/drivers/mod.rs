@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod firebase_auth;
+pub mod firebase_rtdb;
+pub mod firestore;
 pub mod mongodb;
 pub mod mysql;
 pub mod postgres;
@@ -26,6 +29,8 @@ pub enum QueryLanguage {
     Sql,
     Mql,
     Redis,
+    Firestore,
+    FirebaseRtdb,
 }
 
 impl std::fmt::Display for QueryLanguage {
@@ -34,6 +39,8 @@ impl std::fmt::Display for QueryLanguage {
             QueryLanguage::Sql => write!(f, "sql"),
             QueryLanguage::Mql => write!(f, "mql"),
             QueryLanguage::Redis => write!(f, "redis"),
+            QueryLanguage::Firestore => write!(f, "firestore"),
+            QueryLanguage::FirebaseRtdb => write!(f, "firebase_rtdb"),
         }
     }
 }
@@ -134,6 +141,14 @@ pub async fn create_driver(
         }
         "redis" => {
             let driver = redis::RedisDriver::new(conn_str).await?;
+            Ok(Box::new(driver))
+        }
+        "firestore" => {
+            let driver = firestore::FirestoreDriver::new(conn_str).await?;
+            Ok(Box::new(driver))
+        }
+        "firebase_rtdb" => {
+            let driver = firebase_rtdb::RtdbDriver::new(conn_str).await?;
             Ok(Box::new(driver))
         }
         _ => Err(DriverError::UnsupportedEngine(engine.to_string())),

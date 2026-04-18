@@ -38,6 +38,7 @@ pub struct DbConnectionRecord {
     pub username: String,
     pub password: String,
     pub ssl_enabled: bool,
+    pub auth_json: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -139,6 +140,14 @@ impl AppDatabase {
             .unwrap_or(0) > 0;
         if !has_db_col {
             conn.execute("ALTER TABLE connections ADD COLUMN database_name TEXT NOT NULL DEFAULT ''", []).ok();
+        }
+
+        let has_auth_json_col: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name='auth_json'")
+            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i32>(0)))
+            .unwrap_or(0) > 0;
+        if !has_auth_json_col {
+            conn.execute("ALTER TABLE connections ADD COLUMN auth_json TEXT NOT NULL DEFAULT ''", []).ok();
         }
 
         // Query history table (no user_id)
@@ -270,8 +279,8 @@ impl AppDatabase {
     pub fn create_connection(&self, conn_record: &DbConnectionRecord) -> Result<(), AppDbError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO connections (id, name, db_type, host, port, database_name, username, password, ssl_enabled, created_at, updated_at) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO connections (id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 &conn_record.id,
                 &conn_record.name,
@@ -282,6 +291,7 @@ impl AppDatabase {
                 &conn_record.username,
                 &conn_record.password,
                 conn_record.ssl_enabled as i32,
+                &conn_record.auth_json,
                 &conn_record.created_at,
                 &conn_record.updated_at,
             ],
@@ -292,7 +302,7 @@ impl AppDatabase {
     pub fn get_connections(&self) -> Result<Vec<DbConnectionRecord>, AppDbError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, db_type, host, port, database_name, username, password, ssl_enabled, created_at, updated_at 
+            "SELECT id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at 
              FROM connections ORDER BY created_at DESC",
         )?;
 
@@ -308,8 +318,9 @@ impl AppDatabase {
                     username: row.get(6)?,
                     password: row.get(7)?,
                     ssl_enabled: row.get::<_, i32>(8)? == 1,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    auth_json: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -321,7 +332,7 @@ impl AppDatabase {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         let rows = conn.execute(
-            "UPDATE connections SET name = ?1, db_type = ?2, host = ?3, port = ?4, database_name = ?5, username = ?6, password = ?7, ssl_enabled = ?8, updated_at = ?9 WHERE id = ?10",
+            "UPDATE connections SET name = ?1, db_type = ?2, host = ?3, port = ?4, database_name = ?5, username = ?6, password = ?7, ssl_enabled = ?8, auth_json = ?9, updated_at = ?10 WHERE id = ?11",
             rusqlite::params![
                 &conn_record.name,
                 &conn_record.db_type,
@@ -331,6 +342,7 @@ impl AppDatabase {
                 &conn_record.username,
                 &conn_record.password,
                 conn_record.ssl_enabled as i32,
+                &conn_record.auth_json,
                 now,
                 &conn_record.id,
             ],

@@ -74,10 +74,49 @@ export const engines: DatabaseEngine[] = [
     placeholder: { host: 'localhost', database: '0', username: '' },
     description: 'In-memory key-value data store',
   },
+  {
+    id: 'firestore',
+    name: 'Firestore',
+    icon: 'simple-icons:firebase',
+    defaultPort: null,
+    category: 'nosql',
+    defaultDatabase: '(default)',
+    placeholder: { host: '', database: '(default)', username: '' },
+    description: 'Firebase Cloud Firestore document database',
+  },
+  {
+    id: 'firebase_rtdb',
+    name: 'Realtime DB',
+    icon: 'simple-icons:firebase',
+    defaultPort: null,
+    category: 'nosql',
+    defaultDatabase: '',
+    placeholder: { host: 'https://my-app-default-rtdb.firebaseio.com', database: '', username: '' },
+    description: 'Firebase Realtime Database',
+  },
 ] as const
 
 export function getEngine(id: string): DatabaseEngine | undefined {
   return engines.find(e => e.id === id)
+}
+
+/// Returns true if the given string looks like a full MongoDB connection URI
+/// (either the standard `mongodb://` form or the SRV `mongodb+srv://` form).
+export function isMongoUri(value: string): boolean {
+  const v = value.trim().toLowerCase()
+  return v.startsWith('mongodb://') || v.startsWith('mongodb+srv://')
+}
+
+/// Atlas copies connection strings with `<db_password>` (and historically
+/// `<password>`) as a placeholder the user is expected to replace. If the
+/// placeholder is present and a password was provided separately, substitute
+/// the URL-encoded password in. Otherwise, return the URI untouched.
+export function substituteMongoPasswordPlaceholder(uri: string, password: string): string {
+  if (!password) return uri
+  const encoded = encodeURIComponent(password)
+  return uri
+    .replace(/<db_password>/gi, encoded)
+    .replace(/<password>/gi, encoded)
 }
 
 export function buildConnectionString(conn: {
@@ -103,6 +142,9 @@ export function buildConnectionString(conn: {
     case 'mssql':
       return `mssql://${encodedUser}:${encodedPwd}@${host}:${port}/${database || 'master'}`
     case 'mongodb':
+      if (isMongoUri(host)) {
+        return substituteMongoPasswordPlaceholder(host, password)
+      }
       if (username && password) {
         return `mongodb://${encodedUser}:${encodedPwd}@${host}:${port}/${database || 'test'}`
       }
@@ -112,6 +154,10 @@ export function buildConnectionString(conn: {
         return `redis://:${encodedPwd}@${host}:${port}/${database || '0'}`
       }
       return `redis://${host}:${port}/${database || '0'}`
+    case 'firestore':
+      return `firebase://<${username || 'project-id'}>/${database || '(default)'}`
+    case 'firebase_rtdb':
+      return host || 'firebase://<rtdb-url>'
     default:
       return ''
   }
