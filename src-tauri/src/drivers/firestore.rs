@@ -2,6 +2,11 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
+/// Default page size when a Firestore query specifies a collection name with
+/// no structured query. Users who need more rows can pass a `limit` in the
+/// JSON tail (e.g. `Profiles.{"limit":500}`).
+const DEFAULT_LIST_PAGE_SIZE: i32 = 100;
+
 use super::firebase_auth::{FirebaseAuth, FirebaseConnBlob, ServiceAccount};
 use super::{ColumnInfo, DatabaseDriver, DriverError, PaginatedResult, QueryLanguage, Relationship, TableInfo};
 
@@ -19,7 +24,7 @@ impl FirestoreDriver {
         let blob = FirebaseConnBlob::decode(conn_str)?;
         let sa = ServiceAccount::from_json(&blob.auth_json)?;
         let project_id = sa.project_id.clone();
-        let auth = FirebaseAuth::new(sa);
+        let auth = FirebaseAuth::new(sa)?;
 
         let db_id = if blob.firestore_db_id.is_empty() {
             "(default)".to_string()
@@ -336,7 +341,8 @@ impl DatabaseDriver for FirestoreDriver {
                 .map_err(|e| DriverError::QueryFailed(format!("Invalid query JSON: {}", e)))?;
             self.run_query(&collection_name, &query_json).await
         } else {
-            self.list_documents(&collection_name, 1000).await
+            self.list_documents(&collection_name, DEFAULT_LIST_PAGE_SIZE)
+                .await
         }
     }
 

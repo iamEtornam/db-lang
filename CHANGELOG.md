@@ -31,3 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DbConnectionRecord`, `CreateConnectionRequest`, and `UpdateConnectionRequest` now carry an `auth_json` field (defaults to `""` for non-Firebase engines).
 - `translate_with_schema` and `translate_to_query_with_kb` in `gemini.rs` now branch on engine type rather than assuming SQL.
 - README "Multi-Database Support" line updated to list all 7 engines (PostgreSQL, MySQL, SQLite, MongoDB, Redis, Firestore, RTDB).
+
+### Security
+
+- RTDB driver now sends the OAuth access token via the `Authorization: Bearer` header instead of the `?access_token=` URL parameter, so credentials no longer appear in proxy/server logs. Applies to both regular GETs and the SSE streaming endpoint.
+
+### Performance & Robustness (PR #5 review feedback)
+
+- `FirebaseAuth::new` now parses the RSA private key once at construction and caches the `EncodingKey`. Token fetches reuse it and invalid PEMs fail fast at connect time instead of on first token use.
+- `FirebaseConnBlob::encode` is now fallible (returns `Result<String, DriverError>`) — no more `unwrap()` on serialization. Callers in `lib.rs` propagate the error.
+- SSE stream parser caps its line buffer at 1 MiB and emits an `error` event before closing if the cap is exceeded, preventing unbounded memory growth on malicious or broken streams.
+- SSE parser now uses `String::drain(..pos+2)` instead of slicing + `.to_string()`, removing one allocation per event.
+- Firestore "list all" page size lowered from `1000` to `100`. Users who need more rows can pass `{"limit":N}` in the structured-query JSON tail (e.g. `Profiles.{"limit":500}`).

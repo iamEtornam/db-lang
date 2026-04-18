@@ -15,6 +15,11 @@ const RTDB_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/userinfo.email",
 ];
 
+/// Hard cap on the SSE line buffer. Realtime DB events are typically a few
+/// hundred bytes; a malicious or broken stream that never sends `\n\n` should
+/// not be allowed to grow our buffer without bound.
+const SSE_BUFFER_MAX: usize = 1_048_576; // 1 MiB
+
 pub struct RtdbDriver {
     auth: Arc<FirebaseAuth>,
     database_url: String,
@@ -25,7 +30,7 @@ impl RtdbDriver {
     pub async fn new(conn_str: &str) -> Result<Self, DriverError> {
         let blob = FirebaseConnBlob::decode(conn_str)?;
         let sa = ServiceAccount::from_json(&blob.auth_json)?;
-        let auth = Arc::new(FirebaseAuth::new(sa));
+        let auth = Arc::new(FirebaseAuth::new(sa)?);
 
         let database_url = blob.database_url.trim_end_matches('/').to_string();
         if database_url.is_empty() {
@@ -45,19 +50,18 @@ impl RtdbDriver {
 
     async fn authed_get(&self, path: &str, params: &str) -> Result<Value, DriverError> {
         let token = self.auth.access_token(RTDB_SCOPES).await?;
-        let sep = if params.is_empty() { "?" } else { "&" };
         let url = if params.is_empty() {
-            format!("{}/{}.json?access_token={}", self.database_url, path, token)
+            format!("{}/{}.json", self.database_url, path)
         } else {
-            format!(
-                "{}/{}.json?{}{}access_token={}",
-                self.database_url, path, params, sep, token
-            )
+            format!("{}/{}.json?{}", self.database_url, path, params)
         };
 
+        // Pass the access token via Authorization header rather than as a
+        // query parameter so it doesn't leak into proxy/server logs.
         let resp = self
             .http
             .get(&url)
+            .bearer_auth(&token)
             .send()
             .await
             .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
@@ -294,10 +298,9 @@ pub async fn subscribe_to_path(
     let token = auth.access_token(RTDB_SCOPES).await?;
     let clean_path = path.trim().trim_start_matches('/');
     let url = format!(
-        "{}/{}.json?access_token={}",
+        "{}/{}.json",
         database_url.trim_end_matches('/'),
         clean_path,
-        token
     );
 
     let sub_id = Uuid::new_v4().to_string();
@@ -315,8 +318,11 @@ pub async fn subscribe_to_path(
 
     tokio::spawn(async move {
         let client = reqwest::Client::new();
+        // Pass the access token via Authorization header rather than as a
+        // query parameter so it doesn't leak into proxy/server logs.
         let resp = match client
             .get(&url)
+            .bearer_auth(&token)
             .header("Accept", "text/event-stream")
             .send()
             .await
@@ -348,9 +354,28 @@ pub async fn subscribe_to_path(
                         Some(Ok(ref bytes)) => {
                             buffer.push_str(&String::from_utf8_lossy(bytes));
 
+                            // Bound the buffer so a malicious or broken stream
+                            // that never sends `\n\n` cannot exhaust memory.
+                            if buffer.len() > SSE_BUFFER_MAX {
+                                let _ = app.emit(
+                                    &event_name,
+                                    RtdbEvent {
+                                        kind: "error".into(),
+                                        path: owned_path.clone(),
+                                        data: json!(format!(
+                                            "SSE buffer exceeded {} bytes without an event delimiter; closing stream",
+                                            SSE_BUFFER_MAX
+                                        )),
+                                    },
+                                );
+                                break;
+                            }
+
                             while let Some(pos) = buffer.find("\n\n") {
-                                let block = buffer[..pos].to_string();
-                                buffer = buffer[pos + 2..].to_string();
+                                // `drain` reuses the existing allocation
+                                // instead of re-allocating + copying the tail.
+                                let block: String = buffer.drain(..pos + 2).collect();
+                                let block = block.trim_end_matches('\n').to_string();
 
                                 let mut event_type = String::new();
                                 let mut event_data = String::new();

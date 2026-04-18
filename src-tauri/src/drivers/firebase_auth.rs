@@ -48,22 +48,33 @@ struct CachedToken {
 }
 
 pub struct FirebaseAuth {
-    service_account: ServiceAccount,
+    client_email: String,
+    token_uri: String,
+    project_id: String,
+    /// RSA private key parsed once at construction. Token fetches reuse this
+    /// without re-parsing the PEM each time.
+    encoding_key: EncodingKey,
     cached_token: Mutex<Option<CachedToken>>,
     http: reqwest::Client,
 }
 
 impl FirebaseAuth {
-    pub fn new(service_account: ServiceAccount) -> Self {
-        Self {
-            service_account,
+    pub fn new(service_account: ServiceAccount) -> Result<Self, DriverError> {
+        let encoding_key = EncodingKey::from_rsa_pem(service_account.private_key.as_bytes())
+            .map_err(|e| DriverError::ConnectionFailed(format!("Invalid RSA private key: {}", e)))?;
+
+        Ok(Self {
+            client_email: service_account.client_email,
+            token_uri: service_account.token_uri,
+            project_id: service_account.project_id,
+            encoding_key,
             cached_token: Mutex::new(None),
             http: reqwest::Client::new(),
-        }
+        })
     }
 
     pub fn project_id(&self) -> &str {
-        &self.service_account.project_id
+        &self.project_id
     }
 
     pub async fn access_token(&self, scopes: &[&str]) -> Result<String, DriverError> {
@@ -97,23 +108,20 @@ impl FirebaseAuth {
             .as_secs();
 
         let claims = JwtClaims {
-            iss: self.service_account.client_email.clone(),
+            iss: self.client_email.clone(),
             scope: scopes.join(" "),
-            aud: self.service_account.token_uri.clone(),
+            aud: self.token_uri.clone(),
             iat: now,
             exp: now + TOKEN_EXPIRY_SECS,
         };
 
-        let key = EncodingKey::from_rsa_pem(self.service_account.private_key.as_bytes())
-            .map_err(|e| DriverError::ConnectionFailed(format!("Invalid RSA private key: {}", e)))?;
-
         let header = Header::new(Algorithm::RS256);
-        let assertion = encode(&header, &claims, &key)
+        let assertion = encode(&header, &claims, &self.encoding_key)
             .map_err(|e| DriverError::ConnectionFailed(format!("JWT signing failed: {}", e)))?;
 
         let resp = self
             .http
-            .post(&self.service_account.token_uri)
+            .post(&self.token_uri)
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ("assertion", &assertion),
@@ -150,9 +158,10 @@ pub struct FirebaseConnBlob {
 }
 
 impl FirebaseConnBlob {
-    pub fn encode(&self) -> String {
-        let json = serde_json::to_string(self).unwrap();
-        format!("firebase://{}", URL_SAFE_NO_PAD.encode(json.as_bytes()))
+    pub fn encode(&self) -> Result<String, DriverError> {
+        let json = serde_json::to_string(self)
+            .map_err(|e| DriverError::ConnectionFailed(format!("Failed to serialize blob: {}", e)))?;
+        Ok(format!("firebase://{}", URL_SAFE_NO_PAD.encode(json.as_bytes())))
     }
 
     pub fn decode(conn_str: &str) -> Result<Self, DriverError> {
@@ -170,6 +179,26 @@ impl FirebaseConnBlob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Locks in PR feedback fix: an invalid PEM key must fail at
+    /// construction time so we don't re-parse it on every token fetch.
+    #[test]
+    fn invalid_private_key_fails_in_new_not_on_first_token_fetch() {
+        let sa = ServiceAccount {
+            project_id: "demo".into(),
+            client_email: "x@y.iam".into(),
+            private_key: "not a real PEM".into(),
+            token_uri: "https://oauth2.googleapis.com/token".into(),
+        };
+        match FirebaseAuth::new(sa) {
+            Ok(_) => panic!("FirebaseAuth::new must reject invalid PEM up front"),
+            Err(e) => assert!(
+                e.to_string().contains("Invalid RSA private key"),
+                "Unexpected error: {}",
+                e
+            ),
+        }
+    }
 
     /// Reproduces user bug: "Connection failed: Expected firebase:// prefix".
     /// The frontend's `buildConnectionString` for `firestore` emits a preview-only
@@ -224,7 +253,7 @@ mod tests {
             database_url: "https://my-fix-default-rtdb.firebaseio.com".to_string(),
             firestore_db_id: String::new(),
         };
-        let conn_str = blob.encode();
+        let conn_str = blob.encode().expect("encode should succeed");
 
         let decoded = FirebaseConnBlob::decode(&conn_str).expect("backend-built blob must decode");
         assert_eq!(decoded.project_id, "my-fix-project");
@@ -241,7 +270,7 @@ mod tests {
             database_url: "https://demo-default-rtdb.firebaseio.com".to_string(),
             firestore_db_id: "(default)".to_string(),
         };
-        let encoded = blob.encode();
+        let encoded = blob.encode().expect("encode should succeed");
         assert!(encoded.starts_with("firebase://"));
         let decoded = FirebaseConnBlob::decode(&encoded).expect("should decode");
         assert_eq!(decoded.project_id, "demo");

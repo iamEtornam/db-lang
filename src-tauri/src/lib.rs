@@ -46,11 +46,11 @@ fn substitute_mongo_password_placeholder(uri: &str, password: &str) -> String {
 
 /// Build a connection string from stored connection details.
 /// Keeps credentials on the Rust side so they never transit through the frontend.
-fn build_connection_string(conn: &DbConnectionRecord) -> String {
+fn build_connection_string(conn: &DbConnectionRecord) -> Result<String, String> {
     let encoded_pwd = urlencoding::encode(&conn.password);
     let encoded_user = urlencoding::encode(&conn.username);
 
-    match conn.db_type.as_str() {
+    let s = match conn.db_type.as_str() {
         "postgres" => format!(
             "postgresql://{}:{}@{}:{}/{}",
             encoded_user, encoded_pwd, conn.host, conn.port,
@@ -115,7 +115,7 @@ fn build_connection_string(conn: &DbConnectionRecord) -> String {
                     conn.database.clone()
                 },
             };
-            blob.encode()
+            blob.encode().map_err(|e| e.to_string())?
         }
         "firebase_rtdb" => {
             let blob = FirebaseConnBlob {
@@ -124,10 +124,11 @@ fn build_connection_string(conn: &DbConnectionRecord) -> String {
                 database_url: conn.host.clone(),
                 firestore_db_id: String::new(),
             };
-            blob.encode()
+            blob.encode().map_err(|e| e.to_string())?
         }
         _ => String::new(),
-    }
+    };
+    Ok(s)
 }
 
 /// Look up a saved connection and return (engine, connection_string).
@@ -138,7 +139,7 @@ fn resolve_connection(connection_id: &str) -> Result<(String, String), String> {
         .iter()
         .find(|c| c.id == connection_id)
         .ok_or_else(|| format!("Connection '{}' not found", connection_id))?;
-    Ok((conn.db_type.clone(), build_connection_string(conn)))
+    Ok((conn.db_type.clone(), build_connection_string(conn)?))
 }
 
 // ============ Database Commands ============
@@ -332,7 +333,7 @@ fn build_firebase_conn_str(
         database_url: database_url.unwrap_or("").to_string(),
         firestore_db_id: firestore_db_id.unwrap_or("").to_string(),
     };
-    Ok(blob.encode())
+    blob.encode().map_err(|e| e.to_string())
 }
 
 // ============ Realtime Database Streaming ============
@@ -351,7 +352,9 @@ async fn rtdb_subscribe(
     let blob = FirebaseConnBlob::decode(&conn_str).map_err(|e| e.to_string())?;
     let sa = drivers::firebase_auth::ServiceAccount::from_json(&blob.auth_json)
         .map_err(|e| e.to_string())?;
-    let auth = std::sync::Arc::new(drivers::firebase_auth::FirebaseAuth::new(sa));
+    let auth = std::sync::Arc::new(
+        drivers::firebase_auth::FirebaseAuth::new(sa).map_err(|e| e.to_string())?,
+    );
 
     drivers::firebase_rtdb::subscribe_to_path(&blob.database_url, &auth, path, app)
         .await
