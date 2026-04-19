@@ -171,7 +171,9 @@ export function useAppUpdater() {
     }
     catch (err) {
       s.state.value = 'error'
-      s.errorMessage.value = err instanceof Error ? err.message : String(err)
+      s.errorMessage.value = friendlyUpdateError(
+        err instanceof Error ? err.message : String(err),
+      )
       console.error('Update install failed', err)
     }
   }

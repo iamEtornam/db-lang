@@ -8,6 +8,7 @@ const {
   errorMessage,
   installAndRelaunch,
   dismiss,
+  checkForUpdate,
 } = useAppUpdater()
 
 const visible = computed(() =>
@@ -55,7 +56,7 @@ const cta = computed(() => {
 
 async function onCta() {
   if (state.value === 'error') {
-    await useAppUpdater().checkForUpdate()
+    await checkForUpdate()
     return
   }
   await installAndRelaunch()
