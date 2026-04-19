@@ -47,7 +47,7 @@
       "endpoints": [
         "https://github.com/iamEtornam/db-lang/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1OURDMjlEMjJDNkNBRDgKUldUWXlzWWluY0tkWmMrS2lVRFZZVC9WVkVaK3JkZ21$",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRBRDE5MkJFNUZFN0IyRTMKUldUanN1ZGZ2cExSU2dhY2pCUmFzdVZGc3dxSGNXRnQ5cm5BUHRxTHJoeThvWUJlMzhlZjRPNTMK",
       "windows": {
         "installMode": "passive"
       }
