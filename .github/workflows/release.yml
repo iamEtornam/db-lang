@@ -181,7 +181,7 @@ jobs:
           # minisign signature file (Tauri stores it as plain text already).
           read_sig() {
             local sig
-            sig=$(ls "$1" 2>/dev/null | head -n1 || true)
+            sig=$(ls $1 2>/dev/null | head -n1 || true)
             if [[ -z "$sig" ]]; then
               echo ""
               return
@@ -191,7 +191,7 @@ jobs:
 
           # Helper: pick first matching bundle file name (no .sig).
           pick() {
-            ls "$1" 2>/dev/null | grep -v '\.sig$' | head -n1 || true
+            ls $1 2>/dev/null | grep -v '\.sig$' | head -n1 || true
           }
 
           MAC_ARM_BUNDLE=$(pick '*_aarch64.app.tar.gz')
