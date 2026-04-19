@@ -49,6 +49,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeyDown))
 
     <!-- Right side actions -->
     <div class="flex items-center gap-2">
+      <SharedUpdateBanner />
+
       <!-- Command palette trigger -->
       <button
         class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-background text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"

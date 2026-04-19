@@ -63,6 +63,49 @@ npm run tauri dev
 
 This command will spin up the Vite development server and launch the native Tauri window.
 
+## 📦 Releasing & in-app updates
+
+Query Studio ships in-app updates via [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/). Each tagged release on GitHub publishes the platform bundles, their minisign signatures, and a `latest.json` manifest the running app polls.
+
+### One-time setup: signing keys
+
+The updater refuses any download whose minisign signature doesn't match the embedded public key, so you have to generate a keypair before the first signed release.
+
+```bash
+mkdir -p ~/.tauri
+npm run tauri signer generate -- -w ~/.tauri/db-lang.key
+```
+
+You'll be prompted for a password (recommended). The command prints two things:
+
+1. The **public key** — paste it into `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`, replacing `REPLACE_WITH_TAURI_PUBLIC_KEY`. Commit this. Losing it means existing installs can never auto-update again.
+2. A note about the **private key** at `~/.tauri/db-lang.key`. Treat it like a code-signing cert — never commit it.
+
+Then add two GitHub Actions secrets to the repo (`Settings → Secrets and variables → Actions`):
+
+| Secret | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/.tauri/db-lang.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The password you chose above |
+
+### Cutting a release
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow (`.github/workflows/release.yml`) will:
+
+1. Stamp `v0.2.0` (minus the `v`) into `tauri.conf.json`, `package.json`, and `src-tauri/Cargo.toml` so the bundle ships with the right version.
+2. Build signed bundles for macOS (Apple Silicon + Intel), Linux, and Windows.
+3. Upload them to a draft GitHub Release.
+4. Run a follow-up `publish-update-manifest` job that downloads the just-uploaded `.app.tar.gz` / `.AppImage` / `-setup.exe` and their `.sig` siblings, assembles a `latest.json` manifest, and attaches it to the same release.
+
+Once you publish the draft release in the GitHub UI, every installed copy of Query Studio will see the new version on its next launch (or when the user clicks **Settings → Updates → Check for updates**).
+
+> Note: Linux `.deb` users are not auto-updated — the in-app updater only supports the AppImage on Linux. Users who installed via `dpkg`/`apt` will continue to update through the package manager.
+
 ## 🤝 Contributing
 
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/iamEtornam/db-lang/issues) if you want to contribute.

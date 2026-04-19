@@ -33,6 +33,7 @@ export { computedAsync, asyncComputed, computedEager, eagerComputed, computedInj
 export { definePageMeta, PageMeta } from '#app/composables/pages';
 export { defineLazyHydrationComponent } from '#app/composables/lazy-hydration';
 export { useAppSettings } from '../app/composables/useAppSettings';
+export { useAppUpdater, UpdaterState } from '../app/composables/useAppUpdater';
 export { useConnection } from '../app/composables/useConnection';
 export { useQuery } from '../app/composables/useQuery';
 export { useSchemaKb } from '../app/composables/useSchemaKb';

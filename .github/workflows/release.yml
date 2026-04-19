@@ -64,6 +64,39 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
 
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid semver (expected 'vX.Y.Z')."
+            exit 1
+          fi
+          echo "Releasing version $VERSION (from tag $TAG)"
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          export RELEASE_VERSION="$VERSION"
+
+          node - <<'EOF'
+          const fs = require('fs');
+          const version = process.env.RELEASE_VERSION;
+
+          const tauriPath = 'src-tauri/tauri.conf.json';
+          const tauri = JSON.parse(fs.readFileSync(tauriPath, 'utf8'));
+          tauri.version = version;
+          fs.writeFileSync(tauriPath, JSON.stringify(tauri, null, 2) + '\n');
+
+          const pkgPath = 'package.json';
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          pkg.version = version;
+          fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+
+          const cargoPath = 'src-tauri/Cargo.toml';
+          let cargo = fs.readFileSync(cargoPath, 'utf8');
+          cargo = cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${version}"`);
+          fs.writeFileSync(cargoPath, cargo);
+          EOF
+
       - name: Configure macOS signing
         if: matrix.platform == 'macos-latest'
         env:
@@ -90,6 +123,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing keys (required for in-app updates).
+          # See README "Releasing & in-app updates" for how to generate.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Apple signing env vars are exported by the previous step only when
           # APPLE_CERTIFICATE is configured as a repository secret.
         with:
@@ -110,3 +147,98 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  publish-update-manifest:
+    needs: build-and-release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          REPO="${GITHUB_REPOSITORY}"
+
+          mkdir -p _manifest
+          cd _manifest
+
+          # Pull the assets we need: the .app.tar.gz / AppImage / NSIS exe and
+          # their .sig siblings. Any missing asset = the build matrix didn't
+          # produce it; fail loudly so we never publish a half-baked manifest.
+          gh release download "$TAG" --repo "$REPO" --pattern '*.app.tar.gz*' || true
+          gh release download "$TAG" --repo "$REPO" --pattern '*.AppImage*'   || true
+          gh release download "$TAG" --repo "$REPO" --pattern '*-setup.exe*'  || true
+
+          ls -la
+
+          # Helper: read first .sig matching a glob, base64 of the actual
+          # minisign signature file (Tauri stores it as plain text already).
+          read_sig() {
+            local sig
+            sig=$(ls "$1" 2>/dev/null | head -n1 || true)
+            if [[ -z "$sig" ]]; then
+              echo ""
+              return
+            fi
+            cat "$sig"
+          }
+
+          # Helper: pick first matching bundle file name (no .sig).
+          pick() {
+            ls "$1" 2>/dev/null | grep -v '\.sig$' | head -n1 || true
+          }
+
+          MAC_ARM_BUNDLE=$(pick '*_aarch64.app.tar.gz')
+          MAC_X64_BUNDLE=$(pick '*_x64.app.tar.gz')
+          LINUX_BUNDLE=$(pick '*_amd64.AppImage')
+          WIN_BUNDLE=$(pick '*-setup.exe')
+
+          MAC_ARM_SIG=$(read_sig '*_aarch64.app.tar.gz.sig')
+          MAC_X64_SIG=$(read_sig '*_x64.app.tar.gz.sig')
+          LINUX_SIG=$(read_sig '*_amd64.AppImage.sig')
+          WIN_SIG=$(read_sig '*-setup.exe.sig')
+
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+
+          missing=()
+          [[ -z "$MAC_ARM_BUNDLE" || -z "$MAC_ARM_SIG" ]] && missing+=("darwin-aarch64")
+          [[ -z "$MAC_X64_BUNDLE" || -z "$MAC_X64_SIG" ]] && missing+=("darwin-x86_64")
+          [[ -z "$LINUX_BUNDLE"   || -z "$LINUX_SIG"   ]] && missing+=("linux-x86_64")
+          [[ -z "$WIN_BUNDLE"     || -z "$WIN_SIG"     ]] && missing+=("windows-x86_64")
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing updater artifacts for: ${missing[*]}. Did the build matrix succeed and is TAURI_SIGNING_PRIVATE_KEY configured?"
+            exit 1
+          fi
+
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            --arg notes "Query Studio $VERSION — see https://github.com/${REPO}/releases/tag/${TAG}" \
+            --arg mac_arm_url "$base/$MAC_ARM_BUNDLE" --arg mac_arm_sig "$MAC_ARM_SIG" \
+            --arg mac_x64_url "$base/$MAC_X64_BUNDLE" --arg mac_x64_sig "$MAC_X64_SIG" \
+            --arg linux_url   "$base/$LINUX_BUNDLE"   --arg linux_sig   "$LINUX_SIG" \
+            --arg win_url     "$base/$WIN_BUNDLE"     --arg win_sig     "$WIN_SIG" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $mac_arm_sig, url: $mac_arm_url },
+                "darwin-x86_64":  { signature: $mac_x64_sig, url: $mac_x64_url },
+                "linux-x86_64":   { signature: $linux_sig,   url: $linux_url   },
+                "windows-x86_64": { signature: $win_sig,     url: $win_url     }
+              }
+            }' > latest.json
+
+          cat latest.json
+
+          # Replace any existing latest.json on the release.
+          gh release upload "$TAG" --repo "$REPO" --clobber latest.json

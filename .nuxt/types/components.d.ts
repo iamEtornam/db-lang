@@ -23,10 +23,12 @@ interface _GlobalComponents {
   ResultsChartView: typeof import("../../app/components/results/ChartView.vue")['default']
   ResultsDataExplanation: typeof import("../../app/components/results/DataExplanation.vue")['default']
   ResultsTable: typeof import("../../app/components/results/ResultsTable.vue")['default']
+  ResultsRtdbWatchPanel: typeof import("../../app/components/results/RtdbWatchPanel.vue")['default']
   SchemaExplorer: typeof import("../../app/components/schema/SchemaExplorer.vue")['default']
   SchemaKnowledgeBase: typeof import("../../app/components/schema/SchemaKnowledgeBase.vue")['default']
   SharedCommandPalette: typeof import("../../app/components/shared/CommandPalette.vue")['default']
   SharedExportDialog: typeof import("../../app/components/shared/ExportDialog.vue")['default']
+  SharedUpdateBanner: typeof import("../../app/components/shared/UpdateBanner.vue")['default']
   NuxtWelcome: typeof import("../../node_modules/nuxt/dist/app/components/welcome.vue")['default']
   NuxtLayout: typeof import("../../node_modules/nuxt/dist/app/components/nuxt-layout")['default']
   NuxtErrorBoundary: typeof import("../../node_modules/nuxt/dist/app/components/nuxt-error-boundary.vue")['default']
@@ -40,6 +42,10 @@ interface _GlobalComponents {
   NuxtAnnouncer: typeof import("../../node_modules/nuxt/dist/app/components/nuxt-announcer")['default']
   NuxtImg: typeof import("../../node_modules/nuxt/dist/app/components/nuxt-stubs")['NuxtImg']
   NuxtPicture: typeof import("../../node_modules/nuxt/dist/app/components/nuxt-stubs")['NuxtPicture']
+  Accordion: typeof import("../../app/components/ui/accordion/index")['Accordion']
+  AccordionContent: typeof import("../../app/components/ui/accordion/index")['AccordionContent']
+  AccordionItem: typeof import("../../app/components/ui/accordion/index")['AccordionItem']
+  AccordionTrigger: typeof import("../../app/components/ui/accordion/index")['AccordionTrigger']
   AlertDialog: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialog']
   AlertDialogAction: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogAction']
   AlertDialogCancel: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogCancel']
@@ -49,10 +55,6 @@ interface _GlobalComponents {
   AlertDialogHeader: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogHeader']
   AlertDialogTitle: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogTitle']
   AlertDialogTrigger: typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogTrigger']
-  Accordion: typeof import("../../app/components/ui/accordion/index")['Accordion']
-  AccordionContent: typeof import("../../app/components/ui/accordion/index")['AccordionContent']
-  AccordionItem: typeof import("../../app/components/ui/accordion/index")['AccordionItem']
-  AccordionTrigger: typeof import("../../app/components/ui/accordion/index")['AccordionTrigger']
   Badge: typeof import("../../app/components/ui/badge/index")['Badge']
   Button: typeof import("../../app/components/ui/button/index")['Button']
   Card: typeof import("../../app/components/ui/card/index")['Card']
@@ -62,6 +64,9 @@ interface _GlobalComponents {
   CardFooter: typeof import("../../app/components/ui/card/index")['CardFooter']
   CardHeader: typeof import("../../app/components/ui/card/index")['CardHeader']
   CardTitle: typeof import("../../app/components/ui/card/index")['CardTitle']
+  Collapsible: typeof import("../../app/components/ui/collapsible/index")['Collapsible']
+  CollapsibleContent: typeof import("../../app/components/ui/collapsible/index")['CollapsibleContent']
+  CollapsibleTrigger: typeof import("../../app/components/ui/collapsible/index")['CollapsibleTrigger']
   Command: typeof import("../../app/components/ui/command/index")['Command']
   CommandDialog: typeof import("../../app/components/ui/command/index")['CommandDialog']
   CommandEmpty: typeof import("../../app/components/ui/command/index")['CommandEmpty']
@@ -71,10 +76,6 @@ interface _GlobalComponents {
   CommandList: typeof import("../../app/components/ui/command/index")['CommandList']
   CommandSeparator: typeof import("../../app/components/ui/command/index")['CommandSeparator']
   CommandShortcut: typeof import("../../app/components/ui/command/index")['CommandShortcut']
-  Collapsible: typeof import("../../app/components/ui/collapsible/index")['Collapsible']
-  CollapsibleContent: typeof import("../../app/components/ui/collapsible/index")['CollapsibleContent']
-  CollapsibleTrigger: typeof import("../../app/components/ui/collapsible/index")['CollapsibleTrigger']
-  Input: typeof import("../../app/components/ui/input/index")['Input']
   Dialog: typeof import("../../app/components/ui/dialog/index")['Dialog']
   DialogClose: typeof import("../../app/components/ui/dialog/index")['DialogClose']
   DialogContent: typeof import("../../app/components/ui/dialog/index")['DialogContent']
@@ -100,7 +101,11 @@ interface _GlobalComponents {
   DropdownMenuSubTrigger: typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuSubTrigger']
   DropdownMenuTrigger: typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuTrigger']
   DropdownMenuPortal: typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuPortal']
+  Input: typeof import("../../app/components/ui/input/index")['Input']
   Label: typeof import("../../app/components/ui/label/index")['Label']
+  ScrollArea: typeof import("../../app/components/ui/scroll-area/index")['ScrollArea']
+  ScrollBar: typeof import("../../app/components/ui/scroll-area/index")['ScrollBar']
+  Progress: typeof import("../../app/components/ui/progress/index")['Progress']
   Select: typeof import("../../app/components/ui/select/index")['Select']
   SelectContent: typeof import("../../app/components/ui/select/index")['SelectContent']
   SelectGroup: typeof import("../../app/components/ui/select/index")['SelectGroup']
@@ -112,9 +117,7 @@ interface _GlobalComponents {
   SelectSeparator: typeof import("../../app/components/ui/select/index")['SelectSeparator']
   SelectTrigger: typeof import("../../app/components/ui/select/index")['SelectTrigger']
   SelectValue: typeof import("../../app/components/ui/select/index")['SelectValue']
-  ScrollArea: typeof import("../../app/components/ui/scroll-area/index")['ScrollArea']
-  ScrollBar: typeof import("../../app/components/ui/scroll-area/index")['ScrollBar']
-  Progress: typeof import("../../app/components/ui/progress/index")['Progress']
+  Separator: typeof import("../../app/components/ui/separator/index")['Separator']
   Sheet: typeof import("../../app/components/ui/sheet/index")['Sheet']
   SheetClose: typeof import("../../app/components/ui/sheet/index")['SheetClose']
   SheetContent: typeof import("../../app/components/ui/sheet/index")['SheetContent']
@@ -146,16 +149,15 @@ interface _GlobalComponents {
   SidebarRail: typeof import("../../app/components/ui/sidebar/index")['SidebarRail']
   SidebarSeparator: typeof import("../../app/components/ui/sidebar/index")['SidebarSeparator']
   SidebarTrigger: typeof import("../../app/components/ui/sidebar/index")['SidebarTrigger']
+  Skeleton: typeof import("../../app/components/ui/skeleton/index")['Skeleton']
   Tabs: typeof import("../../app/components/ui/tabs/index")['Tabs']
   TabsContent: typeof import("../../app/components/ui/tabs/index")['TabsContent']
   TabsList: typeof import("../../app/components/ui/tabs/index")['TabsList']
   TabsTrigger: typeof import("../../app/components/ui/tabs/index")['TabsTrigger']
-  Separator: typeof import("../../app/components/ui/separator/index")['Separator']
   Tooltip: typeof import("../../app/components/ui/tooltip/index")['Tooltip']
   TooltipContent: typeof import("../../app/components/ui/tooltip/index")['TooltipContent']
   TooltipProvider: typeof import("../../app/components/ui/tooltip/index")['TooltipProvider']
   TooltipTrigger: typeof import("../../app/components/ui/tooltip/index")['TooltipTrigger']
-  Skeleton: typeof import("../../app/components/ui/skeleton/index")['Skeleton']
   Textarea: typeof import("../../app/components/ui/textarea/index")['Textarea']
   ColorScheme: typeof import("../../node_modules/@nuxtjs/color-mode/dist/runtime/component.vue3.vue")['default']
   Icon: typeof import("../../node_modules/@nuxt/icon/dist/runtime/components/index")['default']
@@ -179,10 +181,12 @@ interface _GlobalComponents {
   LazyResultsChartView: LazyComponent<typeof import("../../app/components/results/ChartView.vue")['default']>
   LazyResultsDataExplanation: LazyComponent<typeof import("../../app/components/results/DataExplanation.vue")['default']>
   LazyResultsTable: LazyComponent<typeof import("../../app/components/results/ResultsTable.vue")['default']>
+  LazyResultsRtdbWatchPanel: LazyComponent<typeof import("../../app/components/results/RtdbWatchPanel.vue")['default']>
   LazySchemaExplorer: LazyComponent<typeof import("../../app/components/schema/SchemaExplorer.vue")['default']>
   LazySchemaKnowledgeBase: LazyComponent<typeof import("../../app/components/schema/SchemaKnowledgeBase.vue")['default']>
   LazySharedCommandPalette: LazyComponent<typeof import("../../app/components/shared/CommandPalette.vue")['default']>
   LazySharedExportDialog: LazyComponent<typeof import("../../app/components/shared/ExportDialog.vue")['default']>
+  LazySharedUpdateBanner: LazyComponent<typeof import("../../app/components/shared/UpdateBanner.vue")['default']>
   LazyNuxtWelcome: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/welcome.vue")['default']>
   LazyNuxtLayout: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/nuxt-layout")['default']>
   LazyNuxtErrorBoundary: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/nuxt-error-boundary.vue")['default']>
@@ -196,6 +200,10 @@ interface _GlobalComponents {
   LazyNuxtAnnouncer: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/nuxt-announcer")['default']>
   LazyNuxtImg: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/nuxt-stubs")['NuxtImg']>
   LazyNuxtPicture: LazyComponent<typeof import("../../node_modules/nuxt/dist/app/components/nuxt-stubs")['NuxtPicture']>
+  LazyAccordion: LazyComponent<typeof import("../../app/components/ui/accordion/index")['Accordion']>
+  LazyAccordionContent: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionContent']>
+  LazyAccordionItem: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionItem']>
+  LazyAccordionTrigger: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionTrigger']>
   LazyAlertDialog: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialog']>
   LazyAlertDialogAction: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogAction']>
   LazyAlertDialogCancel: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogCancel']>
@@ -205,10 +213,6 @@ interface _GlobalComponents {
   LazyAlertDialogHeader: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogHeader']>
   LazyAlertDialogTitle: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogTitle']>
   LazyAlertDialogTrigger: LazyComponent<typeof import("../../app/components/ui/alert-dialog/index")['AlertDialogTrigger']>
-  LazyAccordion: LazyComponent<typeof import("../../app/components/ui/accordion/index")['Accordion']>
-  LazyAccordionContent: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionContent']>
-  LazyAccordionItem: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionItem']>
-  LazyAccordionTrigger: LazyComponent<typeof import("../../app/components/ui/accordion/index")['AccordionTrigger']>
   LazyBadge: LazyComponent<typeof import("../../app/components/ui/badge/index")['Badge']>
   LazyButton: LazyComponent<typeof import("../../app/components/ui/button/index")['Button']>
   LazyCard: LazyComponent<typeof import("../../app/components/ui/card/index")['Card']>
@@ -218,6 +222,9 @@ interface _GlobalComponents {
   LazyCardFooter: LazyComponent<typeof import("../../app/components/ui/card/index")['CardFooter']>
   LazyCardHeader: LazyComponent<typeof import("../../app/components/ui/card/index")['CardHeader']>
   LazyCardTitle: LazyComponent<typeof import("../../app/components/ui/card/index")['CardTitle']>
+  LazyCollapsible: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['Collapsible']>
+  LazyCollapsibleContent: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['CollapsibleContent']>
+  LazyCollapsibleTrigger: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['CollapsibleTrigger']>
   LazyCommand: LazyComponent<typeof import("../../app/components/ui/command/index")['Command']>
   LazyCommandDialog: LazyComponent<typeof import("../../app/components/ui/command/index")['CommandDialog']>
   LazyCommandEmpty: LazyComponent<typeof import("../../app/components/ui/command/index")['CommandEmpty']>
@@ -227,10 +234,6 @@ interface _GlobalComponents {
   LazyCommandList: LazyComponent<typeof import("../../app/components/ui/command/index")['CommandList']>
   LazyCommandSeparator: LazyComponent<typeof import("../../app/components/ui/command/index")['CommandSeparator']>
   LazyCommandShortcut: LazyComponent<typeof import("../../app/components/ui/command/index")['CommandShortcut']>
-  LazyCollapsible: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['Collapsible']>
-  LazyCollapsibleContent: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['CollapsibleContent']>
-  LazyCollapsibleTrigger: LazyComponent<typeof import("../../app/components/ui/collapsible/index")['CollapsibleTrigger']>
-  LazyInput: LazyComponent<typeof import("../../app/components/ui/input/index")['Input']>
   LazyDialog: LazyComponent<typeof import("../../app/components/ui/dialog/index")['Dialog']>
   LazyDialogClose: LazyComponent<typeof import("../../app/components/ui/dialog/index")['DialogClose']>
   LazyDialogContent: LazyComponent<typeof import("../../app/components/ui/dialog/index")['DialogContent']>
@@ -256,7 +259,11 @@ interface _GlobalComponents {
   LazyDropdownMenuSubTrigger: LazyComponent<typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuSubTrigger']>
   LazyDropdownMenuTrigger: LazyComponent<typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuTrigger']>
   LazyDropdownMenuPortal: LazyComponent<typeof import("../../app/components/ui/dropdown-menu/index")['DropdownMenuPortal']>
+  LazyInput: LazyComponent<typeof import("../../app/components/ui/input/index")['Input']>
   LazyLabel: LazyComponent<typeof import("../../app/components/ui/label/index")['Label']>
+  LazyScrollArea: LazyComponent<typeof import("../../app/components/ui/scroll-area/index")['ScrollArea']>
+  LazyScrollBar: LazyComponent<typeof import("../../app/components/ui/scroll-area/index")['ScrollBar']>
+  LazyProgress: LazyComponent<typeof import("../../app/components/ui/progress/index")['Progress']>
   LazySelect: LazyComponent<typeof import("../../app/components/ui/select/index")['Select']>
   LazySelectContent: LazyComponent<typeof import("../../app/components/ui/select/index")['SelectContent']>
   LazySelectGroup: LazyComponent<typeof import("../../app/components/ui/select/index")['SelectGroup']>
@@ -268,9 +275,7 @@ interface _GlobalComponents {
   LazySelectSeparator: LazyComponent<typeof import("../../app/components/ui/select/index")['SelectSeparator']>
   LazySelectTrigger: LazyComponent<typeof import("../../app/components/ui/select/index")['SelectTrigger']>
   LazySelectValue: LazyComponent<typeof import("../../app/components/ui/select/index")['SelectValue']>
-  LazyScrollArea: LazyComponent<typeof import("../../app/components/ui/scroll-area/index")['ScrollArea']>
-  LazyScrollBar: LazyComponent<typeof import("../../app/components/ui/scroll-area/index")['ScrollBar']>
-  LazyProgress: LazyComponent<typeof import("../../app/components/ui/progress/index")['Progress']>
+  LazySeparator: LazyComponent<typeof import("../../app/components/ui/separator/index")['Separator']>
   LazySheet: LazyComponent<typeof import("../../app/components/ui/sheet/index")['Sheet']>
   LazySheetClose: LazyComponent<typeof import("../../app/components/ui/sheet/index")['SheetClose']>
   LazySheetContent: LazyComponent<typeof import("../../app/components/ui/sheet/index")['SheetContent']>
@@ -302,16 +307,15 @@ interface _GlobalComponents {
   LazySidebarRail: LazyComponent<typeof import("../../app/components/ui/sidebar/index")['SidebarRail']>
   LazySidebarSeparator: LazyComponent<typeof import("../../app/components/ui/sidebar/index")['SidebarSeparator']>
   LazySidebarTrigger: LazyComponent<typeof import("../../app/components/ui/sidebar/index")['SidebarTrigger']>
+  LazySkeleton: LazyComponent<typeof import("../../app/components/ui/skeleton/index")['Skeleton']>
   LazyTabs: LazyComponent<typeof import("../../app/components/ui/tabs/index")['Tabs']>
   LazyTabsContent: LazyComponent<typeof import("../../app/components/ui/tabs/index")['TabsContent']>
   LazyTabsList: LazyComponent<typeof import("../../app/components/ui/tabs/index")['TabsList']>
   LazyTabsTrigger: LazyComponent<typeof import("../../app/components/ui/tabs/index")['TabsTrigger']>
-  LazySeparator: LazyComponent<typeof import("../../app/components/ui/separator/index")['Separator']>
   LazyTooltip: LazyComponent<typeof import("../../app/components/ui/tooltip/index")['Tooltip']>
   LazyTooltipContent: LazyComponent<typeof import("../../app/components/ui/tooltip/index")['TooltipContent']>
   LazyTooltipProvider: LazyComponent<typeof import("../../app/components/ui/tooltip/index")['TooltipProvider']>
   LazyTooltipTrigger: LazyComponent<typeof import("../../app/components/ui/tooltip/index")['TooltipTrigger']>
-  LazySkeleton: LazyComponent<typeof import("../../app/components/ui/skeleton/index")['Skeleton']>
   LazyTextarea: LazyComponent<typeof import("../../app/components/ui/textarea/index")['Textarea']>
   LazyColorScheme: LazyComponent<typeof import("../../node_modules/@nuxtjs/color-mode/dist/runtime/component.vue3.vue")['default']>
   LazyIcon: LazyComponent<typeof import("../../node_modules/@nuxt/icon/dist/runtime/components/index")['default']>

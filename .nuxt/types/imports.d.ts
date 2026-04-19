@@ -161,6 +161,7 @@ declare global {
   const useAnnouncer: typeof import('../../node_modules/nuxt/dist/app/composables/announcer').useAnnouncer
   const useAppConfig: typeof import('../../node_modules/nuxt/dist/app/config').useAppConfig
   const useAppSettings: typeof import('../../app/composables/useAppSettings').useAppSettings
+  const useAppUpdater: typeof import('../../app/composables/useAppUpdater').useAppUpdater
   const useArrayDifference: typeof import('@vueuse/core').useArrayDifference
   const useArrayEvery: typeof import('@vueuse/core').useArrayEvery
   const useArrayFilter: typeof import('@vueuse/core').useArrayFilter
@@ -423,6 +424,9 @@ declare global {
   export type { PageMeta } from '../../node_modules/nuxt/dist/app/composables/pages'
   import('../../node_modules/nuxt/dist/app/composables/pages')
   // @ts-ignore
+  export type { UpdaterState } from '../../app/composables/useAppUpdater'
+  import('../../app/composables/useAppUpdater')
+  // @ts-ignore
   export type { AddHistoryRequest } from '../../app/stores/history'
   import('../../app/stores/history')
   // @ts-ignore
@@ -593,6 +597,7 @@ declare module 'vue' {
     readonly useAnnouncer: UnwrapRef<typeof import('../../node_modules/nuxt/dist/app/composables/announcer')['useAnnouncer']>
     readonly useAppConfig: UnwrapRef<typeof import('../../node_modules/nuxt/dist/app/config')['useAppConfig']>
     readonly useAppSettings: UnwrapRef<typeof import('../../app/composables/useAppSettings')['useAppSettings']>
+    readonly useAppUpdater: UnwrapRef<typeof import('../../app/composables/useAppUpdater')['useAppUpdater']>
     readonly useArrayDifference: UnwrapRef<typeof import('@vueuse/core')['useArrayDifference']>
     readonly useArrayEvery: UnwrapRef<typeof import('@vueuse/core')['useArrayEvery']>
     readonly useArrayFilter: UnwrapRef<typeof import('@vueuse/core')['useArrayFilter']>
