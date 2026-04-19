@@ -1,7 +1,7 @@
 {
   "name": "db-lang",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.4",
   "type": "module",
   "scripts": {
     "dev": "nuxt dev --port 3000",
@@ -20,6 +20,8 @@
     "@tanstack/vue-table": "^8.21.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@unovis/ts": "^1.4.3",
     "@unovis/vue": "^1.4.3",
     "@vueuse/core": "^14.2.1",

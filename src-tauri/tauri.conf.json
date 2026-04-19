@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Query Studio",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "identifier": "dev.etornam.db-lang",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,6 +40,17 @@
       "signingIdentity": null,
       "entitlements": "entitlements.plist",
       "exceptionDomain": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/iamEtornam/db-lang/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1OURDMjlEMjJDNkNBRDgKUldUWXlzWWluY0tkWmMrS2lVRFZZVC9WVkVaK3JkZ21$",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

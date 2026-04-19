@@ -170,6 +170,22 @@ watch(() => llmConfig.value.provider, (provider) => {
   }
 })
 
+const {
+  state: updaterState,
+  progress: updaterProgress,
+  currentVersion: updaterCurrentVersion,
+  latestVersion: updaterLatestVersion,
+  lastChecked: updaterLastChecked,
+  errorMessage: updaterError,
+  loadCurrentVersion,
+  checkForUpdate,
+  installAndRelaunch,
+} = useAppUpdater()
+
+onMounted(() => {
+  loadCurrentVersion()
+})
+
 async function saveConfig() {
   isSaving.value = true
 
@@ -279,6 +295,76 @@ async function saveConfig() {
         <Icon v-else name="lucide:save" class="size-4" />
         Save Settings
       </Button>
+    </div>
+
+    <Separator />
+
+    <!-- Updates -->
+    <div class="space-y-3">
+      <div>
+        <h2 class="text-sm font-semibold">Updates</h2>
+        <p class="text-xs text-muted-foreground">
+          Query Studio checks for new releases automatically a few times per day.
+        </p>
+      </div>
+
+      <div class="flex items-center justify-between rounded-md border border-border p-3">
+        <div class="space-y-0.5">
+          <div class="text-sm font-medium">
+            Current version
+            <span class="text-muted-foreground">v{{ updaterCurrentVersion || '…' }}</span>
+          </div>
+          <div class="text-xs text-muted-foreground">
+            <template v-if="updaterState === 'checking'">Checking for updates…</template>
+            <template v-else-if="updaterState === 'available'">
+              Update available: v{{ updaterLatestVersion }}
+            </template>
+            <template v-else-if="updaterState === 'downloading'">
+              Downloading update… {{ updaterProgress }}%
+            </template>
+            <template v-else-if="updaterState === 'ready'">
+              Update ready — restart to apply
+            </template>
+            <template v-else-if="updaterState === 'upToDate'">
+              You're on the latest version.
+            </template>
+            <template v-else-if="updaterState === 'error'">
+              <span class="text-destructive">{{ updaterError || 'Update failed' }}</span>
+            </template>
+            <template v-else-if="updaterLastChecked">
+              Last checked {{ updaterLastChecked.toLocaleString() }}
+            </template>
+            <template v-else>
+              Never checked.
+            </template>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <Button
+            v-if="updaterState === 'available' || updaterState === 'ready'"
+            size="sm"
+            @click="installAndRelaunch"
+          >
+            <Icon name="lucide:rotate-cw" class="size-4" />
+            {{ updaterState === 'ready' ? 'Restart now' : 'Install & restart' }}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            :disabled="updaterState === 'checking' || updaterState === 'downloading'"
+            @click="checkForUpdate()"
+          >
+            <Icon
+              v-if="updaterState === 'checking' || updaterState === 'downloading'"
+              name="lucide:loader-2"
+              class="size-4 animate-spin"
+            />
+            <Icon v-else name="lucide:refresh-cw" class="size-4" />
+            Check for updates
+          </Button>
+        </div>
+      </div>
     </div>
 
     <Separator />

@@ -12,6 +12,15 @@ useHead({
     { name: 'description', content: 'AI-powered database management tool' },
   ],
 })
+
+const { maybeCheckOnBoot, loadCurrentVersion } = useAppUpdater()
+
+onMounted(() => {
+  loadCurrentVersion()
+  maybeCheckOnBoot().catch((err) => {
+    console.warn('Background update check failed', err)
+  })
+})
 </script>
 
 <template>
