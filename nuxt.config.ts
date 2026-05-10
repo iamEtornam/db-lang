@@ -64,6 +64,21 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    serverBundle: 'local',
+    serverBundle: false,
+    clientBundle: {
+      scan: true,
+      // Explicitly include icons resolved dynamically (e.g. from engines.ts constants)
+      // so the static scanner doesn't miss them.
+      icons: [
+        'simple-icons:postgresql',
+        'simple-icons:mysql',
+        'simple-icons:mariadb',
+        'simple-icons:sqlite',
+        'simple-icons:mongodb',
+        'simple-icons:redis',
+        'simple-icons:firebase',
+        'lucide:database',
+      ],
+    },
   },
 })
