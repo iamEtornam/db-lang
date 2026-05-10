@@ -64,7 +64,12 @@ export default defineNuxtConfig({
   },
 
   icon: {
+    // Tauri serves a static bundle — no server, no CDN access.
+    // All icons must be bundled into the client JS at build time.
     serverBundle: false,
+    // Disable CDN fallback: CSP in tauri.conf.json blocks api.iconify.design,
+    // and failed fetches trigger uncaught promise rejections that blank the page.
+    fallbackToApi: false,
     clientBundle: {
       scan: true,
       // Explicitly include icons resolved dynamically (e.g. from engines.ts constants)
