@@ -64,6 +64,26 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    serverBundle: 'local',
+    // Tauri serves a static bundle — no server, no CDN access.
+    // All icons must be bundled into the client JS at build time.
+    serverBundle: false,
+    // Disable CDN fallback: CSP in tauri.conf.json blocks api.iconify.design,
+    // and failed fetches trigger uncaught promise rejections that blank the page.
+    fallbackToApi: false,
+    clientBundle: {
+      scan: true,
+      // Explicitly include icons resolved dynamically (e.g. from engines.ts constants)
+      // so the static scanner doesn't miss them.
+      icons: [
+        'simple-icons:postgresql',
+        'simple-icons:mysql',
+        'simple-icons:mariadb',
+        'simple-icons:sqlite',
+        'simple-icons:mongodb',
+        'simple-icons:redis',
+        'simple-icons:firebase',
+        'lucide:database',
+      ],
+    },
   },
 })
