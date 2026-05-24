@@ -48,6 +48,44 @@ impl MysqlDriver {
         Self::rows_to_json(result)
     }
 
+    /// Run N statements atomically inside a single transaction. Explicit
+    /// START TRANSACTION / COMMIT plus ROLLBACK on first error — mysql_async
+    /// doesn't expose a typed transaction handle for MultiplexedConnection,
+    /// so we drive the transaction with plain SQL. Returns the count of
+    /// statements executed.
+    pub async fn execute_batch(&self, statements: &[String]) -> Result<u64, DriverError> {
+        if statements.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().await;
+        conn.query_drop("START TRANSACTION")
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        for s in statements {
+            if let Err(e) = conn.query_drop(s).await {
+                // Best-effort rollback; the original error is what we surface.
+                let _ = conn.query_drop("ROLLBACK").await;
+                return Err(DriverError::QueryFailed(e.to_string()));
+            }
+        }
+        conn.query_drop("COMMIT")
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(statements.len() as u64)
+    }
+
+    /// Execute a non-row-returning statement (INSERT/UPDATE/DELETE) and
+    /// report how many rows it affected. Used by the schema-page write
+    /// flow; not part of the cross-engine DatabaseDriver trait.
+    pub async fn execute_statement(&self, sql: &str) -> Result<u64, DriverError> {
+        let sql_str = sql.to_string();
+        let mut conn = self.conn.lock().await;
+        conn.exec_drop(&sql_str, ())
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(conn.affected_rows())
+    }
+
     fn rows_to_json(result: Vec<mysql_async::Row>) -> Result<Vec<Value>, DriverError> {
         let mut results: Vec<Value> = Vec::new();
 

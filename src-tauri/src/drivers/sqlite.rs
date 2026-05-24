@@ -58,6 +58,36 @@ impl SqliteDriver {
         }
         Ok(results)
     }
+
+    /// Run N statements atomically inside a single transaction. Uses
+    /// rusqlite's unchecked_transaction to drive an immediate BEGIN. On any
+    /// error the drop guard rolls back; we only call commit() on success.
+    pub async fn execute_batch(&self, statements: &[String]) -> Result<u64, DriverError> {
+        if statements.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        for s in statements {
+            tx.execute(s, [])
+                .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(statements.len() as u64)
+    }
+
+    /// Execute a non-row-returning statement (INSERT/UPDATE/DELETE) and
+    /// report how many rows it affected. Used by the schema-page write
+    /// flow; not part of the cross-engine DatabaseDriver trait.
+    pub async fn execute_statement(&self, sql: &str) -> Result<u64, DriverError> {
+        let conn = self.conn.lock().await;
+        conn.execute(sql, [])
+            .map(|n| n as u64)
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))
+    }
 }
 
 #[async_trait]

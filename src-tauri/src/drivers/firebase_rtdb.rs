@@ -80,6 +80,160 @@ impl RtdbDriver {
             .map_err(|e| DriverError::QueryFailed(e.to_string()))
     }
 
+    /// PUT a JSON value at `path`. Replaces whatever was there. RTDB
+    /// accepts any JSON shape (object / array / scalar / null), so the
+    /// body is forwarded verbatim — validation happens server-side.
+    pub async fn set_value(&self, path: &str, value_json: &str) -> Result<(), DriverError> {
+        let value: Value = serde_json::from_str(value_json)
+            .map_err(|e| DriverError::QueryFailed(format!("Invalid JSON: {}", e)))?;
+
+        let token = self.auth.access_token(RTDB_SCOPES).await?;
+        let url = format!("{}/{}.json", self.database_url, path.trim_start_matches('/'));
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&token)
+            .json(&value)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("RTDB PUT failed ({}): {}", status, body)));
+        }
+        Ok(())
+    }
+
+    /// POST a JSON value at `path`, letting RTDB generate a push key.
+    /// Returns the generated key (e.g. `-N_xxx`).
+    pub async fn push_value(&self, path: &str, value_json: &str) -> Result<String, DriverError> {
+        let value: Value = serde_json::from_str(value_json)
+            .map_err(|e| DriverError::QueryFailed(format!("Invalid JSON: {}", e)))?;
+
+        let token = self.auth.access_token(RTDB_SCOPES).await?;
+        let url = format!("{}/{}.json", self.database_url, path.trim_start_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&token)
+            .json(&value)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("RTDB POST failed ({}): {}", status, body)));
+        }
+
+        let response_json: Value = resp
+            .json()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        let name = response_json
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| DriverError::QueryFailed("RTDB POST response missing 'name'".into()))?
+            .to_string();
+        Ok(name)
+    }
+
+    /// Partial-update a node by merging the given JSON object at `path`.
+    /// `{changed_field: value, removed_field: null}` is the canonical RTDB
+    /// PATCH idiom — null values delete that key, others overwrite.
+    pub async fn patch_value(&self, path: &str, partial_json: &str) -> Result<(), DriverError> {
+        let value: Value = serde_json::from_str(partial_json)
+            .map_err(|e| DriverError::QueryFailed(format!("Invalid JSON: {}", e)))?;
+        // RTDB requires PATCH bodies to be JSON objects.
+        if !value.is_object() {
+            return Err(DriverError::QueryFailed(
+                "RTDB PATCH expects a JSON object body".into(),
+            ));
+        }
+        let token = self.auth.access_token(RTDB_SCOPES).await?;
+        let url = format!("{}/{}.json", self.database_url, path.trim_start_matches('/'));
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(&value)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("RTDB PATCH failed ({}): {}", status, body)));
+        }
+        Ok(())
+    }
+
+    /// Bulk-delete N children under a parent node atomically. RTDB's PATCH
+    /// with `{key1: null, key2: null}` removes those children in one
+    /// request — either all succeed or all fail. Empty `child_keys` is a
+    /// no-op (would PATCH an empty body which is wasteful).
+    pub async fn delete_many_children(
+        &self,
+        parent_path: &str,
+        child_keys: &[String],
+    ) -> Result<u64, DriverError> {
+        if child_keys.is_empty() {
+            return Ok(0);
+        }
+        let mut body = Map::new();
+        for k in child_keys {
+            body.insert(k.clone(), Value::Null);
+        }
+        let payload = Value::Object(body);
+
+        let token = self.auth.access_token(RTDB_SCOPES).await?;
+        let url = format!(
+            "{}/{}.json",
+            self.database_url,
+            parent_path.trim_start_matches('/')
+        );
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!(
+                "RTDB PATCH (bulk delete) failed ({}): {}",
+                status, body
+            )));
+        }
+        Ok(child_keys.len() as u64)
+    }
+
+    pub async fn delete_value(&self, path: &str) -> Result<(), DriverError> {
+        let token = self.auth.access_token(RTDB_SCOPES).await?;
+        let url = format!("{}/{}.json", self.database_url, path.trim_start_matches('/'));
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("RTDB DELETE failed ({}): {}", status, body)));
+        }
+        Ok(())
+    }
+
     fn flatten_object_to_rows(obj: &Value) -> Vec<Value> {
         match obj {
             Value::Object(map) => {
