@@ -37,6 +37,181 @@ impl MongoDriver {
         }
         Value::Object(map)
     }
+
+    /// Insert a single document. Returns the inserted `_id` rendered as a
+    /// JSON value (hex string for ObjectId, otherwise the literal value),
+    /// matching how the rest of the read path serialises identifiers.
+    pub async fn insert_one(&self, collection: &str, doc_json: &str) -> Result<String, DriverError> {
+        let mut bson_doc = parse_doc_json(doc_json)?;
+        // Promote a stringy hex `_id` provided by the user to an ObjectId, so
+        // it round-trips through the rest of the UI as an ObjectId reference.
+        if let Some(id) = bson_doc.get("_id").cloned() {
+            bson_doc.insert("_id", coerce_id_bson(id));
+        }
+        let result = self
+            .db()
+            .collection::<mongodb::bson::Document>(collection)
+            .insert_one(bson_doc)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(bson_value_to_json(&result.inserted_id).to_string())
+    }
+
+    /// Replace the document matched by `filter_json` with the document in
+    /// `replacement_json`. Strips `_id` from the replacement so a user
+    /// accidentally editing it never trips Mongo's "_id cannot change" guard.
+    pub async fn replace_one(
+        &self,
+        collection: &str,
+        filter_json: &str,
+        replacement_json: &str,
+    ) -> Result<u64, DriverError> {
+        let mut filter = parse_doc_json(filter_json)?;
+        if let Some(id) = filter.get("_id").cloned() {
+            filter.insert("_id", coerce_id_bson(id));
+        }
+        let mut replacement = parse_doc_json(replacement_json)?;
+        replacement.remove("_id");
+
+        let result = self
+            .db()
+            .collection::<mongodb::bson::Document>(collection)
+            .replace_one(filter, replacement)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(result.modified_count)
+    }
+
+    /// Partial-update a single document using `$set` (changed fields) and
+    /// `$unset` (removed fields). The dialog diffs original vs. edited
+    /// top-level keys and calls this; full-document replacement still goes
+    /// via `replace_one`. `_id` is stripped from `$set` server-side because
+    /// Mongo rejects $set on _id (it would error mid-batch).
+    pub async fn update_one_fields(
+        &self,
+        collection: &str,
+        filter_json: &str,
+        set_json: &str,
+        unset_fields: &[String],
+    ) -> Result<u64, DriverError> {
+        let mut filter = parse_doc_json(filter_json)?;
+        if let Some(id) = filter.get("_id").cloned() {
+            filter.insert("_id", coerce_id_bson(id));
+        }
+
+        let mut set_doc = parse_doc_json(set_json)?;
+        set_doc.remove("_id");
+
+        let mut update = mongodb::bson::Document::new();
+        if !set_doc.is_empty() {
+            update.insert("$set", set_doc);
+        }
+        if !unset_fields.is_empty() {
+            let mut unset = mongodb::bson::Document::new();
+            for f in unset_fields {
+                if f == "_id" { continue; }
+                unset.insert(f, "");
+            }
+            if !unset.is_empty() {
+                update.insert("$unset", unset);
+            }
+        }
+
+        if update.is_empty() {
+            // Nothing to apply — Mongo would error on an empty update doc.
+            return Ok(0);
+        }
+
+        let result = self
+            .db()
+            .collection::<mongodb::bson::Document>(collection)
+            .update_one(filter, update)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(result.modified_count)
+    }
+
+    /// Delete every document matching the filter. Used by the bulk-delete
+    /// flow; the frontend assembles `{ _id: { $in: [...] } }` but the API
+    /// stays free-form so power users can target by other criteria too.
+    /// Same `_id` ObjectId promotion as the single-doc path.
+    pub async fn delete_many(&self, collection: &str, filter_json: &str) -> Result<u64, DriverError> {
+        let mut filter = parse_doc_json(filter_json)?;
+        if let Some(id) = filter.get("_id").cloned() {
+            // For {_id: {$in: [...]}} we don't want to promote the wrapper
+            // object; only promote when _id is a bare value (the single-doc
+            // case). The bulk path goes via `_id_in_filter` below.
+            if !matches!(id, mongodb::bson::Bson::Document(_)) {
+                filter.insert("_id", coerce_id_bson(id));
+            }
+            else if let Some(in_arr) = id
+                .as_document()
+                .and_then(|d| d.get("$in"))
+                .and_then(|v| v.as_array())
+            {
+                // Promote each element of $in: turn 24-char hex strings into
+                // ObjectIds so a list of read-path ids round-trips correctly.
+                let promoted: Vec<mongodb::bson::Bson> = in_arr
+                    .iter()
+                    .cloned()
+                    .map(coerce_id_bson)
+                    .collect();
+                let mut new_id_doc = mongodb::bson::Document::new();
+                new_id_doc.insert("$in", mongodb::bson::Bson::Array(promoted));
+                filter.insert("_id", mongodb::bson::Bson::Document(new_id_doc));
+            }
+        }
+        let result = self
+            .db()
+            .collection::<mongodb::bson::Document>(collection)
+            .delete_many(filter)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(result.deleted_count)
+    }
+
+    pub async fn delete_one(&self, collection: &str, filter_json: &str) -> Result<u64, DriverError> {
+        let mut filter = parse_doc_json(filter_json)?;
+        if let Some(id) = filter.get("_id").cloned() {
+            filter.insert("_id", coerce_id_bson(id));
+        }
+        let result = self
+            .db()
+            .collection::<mongodb::bson::Document>(collection)
+            .delete_one(filter)
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        Ok(result.deleted_count)
+    }
+}
+
+/// Parse a JSON string into a top-level bson Document. Anything that isn't
+/// a JSON object at the root is rejected — we only ever operate on whole
+/// documents and filters, both of which are objects.
+fn parse_doc_json(s: &str) -> Result<mongodb::bson::Document, DriverError> {
+    let json: serde_json::Value = serde_json::from_str(s)
+        .map_err(|e| DriverError::QueryFailed(format!("Invalid JSON: {}", e)))?;
+    let bson = mongodb::bson::to_bson(&json)
+        .map_err(|e| DriverError::QueryFailed(format!("JSON -> BSON conversion failed: {}", e)))?;
+    match bson {
+        mongodb::bson::Bson::Document(d) => Ok(d),
+        other => Err(DriverError::QueryFailed(format!(
+            "Expected a JSON object at the root, got {:?}",
+            other.element_type()
+        ))),
+    }
+}
+
+/// Promote a 24-character lowercase-hex string to a Bson ObjectId. Everything
+/// else (including non-hex strings, numbers, already-ObjectIds) passes
+/// through untouched so callers can use custom `_id` types like UUIDs.
+fn coerce_id_bson(value: mongodb::bson::Bson) -> mongodb::bson::Bson {
+    if let mongodb::bson::Bson::String(ref s) = value {
+        if let Ok(oid) = mongodb::bson::oid::ObjectId::parse_str(s) {
+            return mongodb::bson::Bson::ObjectId(oid);
+        }
+    }
+    value
 }
 
 fn extract_db_name(conn_str: &str) -> Option<String> {

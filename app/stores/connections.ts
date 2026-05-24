@@ -41,7 +41,6 @@ export const useConnectionsStore = defineStore('connections', () => {
     try {
       const result = await invoke<Connection>('save_connection', { connection })
       connections.value.unshift(result)
-      activeConnectionId.value = result.id
       return result
     }
     catch (err) {

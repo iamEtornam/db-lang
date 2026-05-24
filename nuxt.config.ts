@@ -70,10 +70,18 @@ export default defineNuxtConfig({
     // Disable CDN fallback: CSP in tauri.conf.json blocks api.iconify.design,
     // and failed fetches trigger uncaught promise rejections that blank the page.
     fallbackToApi: false,
+    // Render icons as inline <svg>, not via runtime-injected CSS classes.
+    // CSS mode looks up icons asynchronously (loadIcon -> initClientBundle ->
+    // mountCSS), and the dynamic <style> injection is unreliable in Tauri
+    // release webviews — icons end up as empty <span>s. SVG mode runs
+    // initClientBundle synchronously in setup() and renders inline SVG, so
+    // bundled icons render the first frame.
+    mode: 'svg',
     clientBundle: {
       scan: true,
-      // Explicitly include icons resolved dynamically (e.g. from engines.ts constants)
-      // so the static scanner doesn't miss them.
+      // The scanner only globs **/*.{vue,jsx,tsx,md,mdc,mdx,yml,yaml} — it
+      // does NOT scan plain .ts files. Icons defined only in app/constants/*.ts
+      // (e.g. engines.ts) must be listed explicitly here.
       icons: [
         'simple-icons:postgresql',
         'simple-icons:mysql',

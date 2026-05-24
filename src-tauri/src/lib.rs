@@ -153,6 +153,700 @@ async fn query_db(connection_id: &str, query: &str) -> Result<String, String> {
     serde_json::to_string(&rows).map_err(|e| e.to_string())
 }
 
+/// Insert one MongoDB document into a collection. Returns the inserted
+/// `_id` as a JSON-encoded string (matches the read path's serialisation).
+#[tauri::command]
+async fn mongo_insert_one(
+    connection_id: &str,
+    collection: &str,
+    doc_json: &str,
+) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "mongodb" {
+        return Err(format!("mongo_insert_one requires a mongodb connection; got '{}'", engine));
+    }
+    let driver = drivers::mongodb::MongoDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .insert_one(collection, doc_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Replace a single MongoDB document. The replacement always strips `_id`
+/// before sending it to the server so an accidentally-edited `_id` field
+/// can't trigger Mongo's "the _id field cannot be changed" error.
+#[tauri::command]
+async fn mongo_replace_one(
+    connection_id: &str,
+    collection: &str,
+    filter_json: &str,
+    replacement_json: &str,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "mongodb" {
+        return Err(format!("mongo_replace_one requires a mongodb connection; got '{}'", engine));
+    }
+    let driver = drivers::mongodb::MongoDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .replace_one(collection, filter_json, replacement_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Partial-update a single Mongo document with $set (changed fields) and
+/// $unset (removed fields). Frontend computes the diff against the
+/// pre-edit document and sends only what changed.
+#[tauri::command]
+async fn mongo_update_one(
+    connection_id: &str,
+    collection: &str,
+    filter_json: &str,
+    set_json: &str,
+    unset_fields: Vec<String>,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "mongodb" {
+        return Err(format!("mongo_update_one requires a mongodb connection; got '{}'", engine));
+    }
+    let driver = drivers::mongodb::MongoDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .update_one_fields(collection, filter_json, set_json, &unset_fields)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Bulk-delete N MongoDB documents matching a filter. The filter is
+/// free-form so callers can target by `_id $in [...]` (the bulk-select
+/// UI's default) or by any other criteria.
+#[tauri::command]
+async fn mongo_delete_many(
+    connection_id: &str,
+    collection: &str,
+    filter_json: &str,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "mongodb" {
+        return Err(format!("mongo_delete_many requires a mongodb connection; got '{}'", engine));
+    }
+    let driver = drivers::mongodb::MongoDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_many(collection, filter_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mongo_delete_one(
+    connection_id: &str,
+    collection: &str,
+    filter_json: &str,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "mongodb" {
+        return Err(format!("mongo_delete_one requires a mongodb connection; got '{}'", engine));
+    }
+    let driver = drivers::mongodb::MongoDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_one(collection, filter_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ============ Redis writes ============
+
+/// Read a single Redis key with its TYPE and current value. The frontend
+/// re-reads via this command at the moment the Edit dialog opens so the
+/// editor reflects the freshest server state, not a possibly-stale preview.
+#[tauri::command]
+async fn redis_get_key(
+    connection_id: &str,
+    key: &str,
+) -> Result<drivers::redis::RedisKeyView, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_get_key requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver.read_value(key).await.map_err(|e| e.to_string())
+}
+
+/// Write a Redis key. The frontend tags the type so we route to the right
+/// driver method; for non-string types the driver does DEL + recreate so
+/// the resulting key exactly matches the user's edited value (no leftover
+/// fields / list entries the new value didn't mention).
+///
+/// `value_json` shape per type:
+///   string -> JSON string
+///   hash   -> JSON object  { field: <string-coerced value> }
+///   list   -> JSON array of strings
+///   set    -> JSON array of strings
+///   zset   -> JSON object  { member: <number score> }
+#[tauri::command]
+async fn redis_set_key(
+    connection_id: &str,
+    key: &str,
+    key_type: &str,
+    value_json: &str,
+    ttl_seconds: Option<i64>,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_set_key requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let parsed: serde_json::Value = serde_json::from_str(value_json)
+        .map_err(|e| format!("Invalid JSON value: {}", e))?;
+
+    match key_type {
+        "string" => {
+            // Accept any scalar — JSON number/bool/null get stringified, which
+            // matches what Redis stores (everything is bytes anyway).
+            let s = match parsed {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            driver.set_string(key, &s, ttl_seconds).await.map_err(|e| e.to_string())
+        }
+        "hash" => {
+            let obj = parsed.as_object().ok_or_else(||
+                "Hash value must be a JSON object: { field: value }".to_string()
+            )?;
+            let fields: Vec<(String, String)> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                }))
+                .collect();
+            driver.set_hash(key, fields, ttl_seconds).await.map_err(|e| e.to_string())
+        }
+        "list" => {
+            let arr = parsed.as_array().ok_or_else(||
+                "List value must be a JSON array of strings".to_string()
+            )?;
+            let items: Vec<String> = arr
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .collect();
+            driver.set_list(key, items, ttl_seconds).await.map_err(|e| e.to_string())
+        }
+        "set" => {
+            let arr = parsed.as_array().ok_or_else(||
+                "Set value must be a JSON array of strings".to_string()
+            )?;
+            let members: Vec<String> = arr
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .collect();
+            driver.set_set(key, members, ttl_seconds).await.map_err(|e| e.to_string())
+        }
+        "zset" => {
+            let obj = parsed.as_object().ok_or_else(||
+                "Sorted-set value must be a JSON object: { member: numeric_score }".to_string()
+            )?;
+            let mut members = Vec::with_capacity(obj.len());
+            for (m, s) in obj {
+                let score = s
+                    .as_f64()
+                    .ok_or_else(|| format!("zset member '{}' has non-numeric score: {}", m, s))?;
+                members.push((m.clone(), score));
+            }
+            driver.set_zset(key, members, ttl_seconds).await.map_err(|e| e.to_string())
+        }
+        other => Err(format!("Unsupported Redis key type: '{}'", other)),
+    }
+}
+
+// ===== Redis per-type patch commands =====
+
+/// Patch a hash: HSET changed fields, HDEL removed fields. TTL optional —
+/// only touched when explicitly provided so partial updates don't reset
+/// the existing expiry.
+#[tauri::command]
+async fn redis_hash_patch(
+    connection_id: &str,
+    key: &str,
+    set_fields: std::collections::HashMap<String, String>,
+    unset_fields: Vec<String>,
+    ttl_seconds: Option<i64>,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_hash_patch requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let set_vec: Vec<(String, String)> = set_fields.into_iter().collect();
+    driver
+        .hash_patch(key, set_vec, unset_fields, ttl_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn redis_set_patch(
+    connection_id: &str,
+    key: &str,
+    add: Vec<String>,
+    remove: Vec<String>,
+    ttl_seconds: Option<i64>,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_set_patch requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .set_patch(key, add, remove, ttl_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Patch a sorted set. `set_members` maps member -> score (numeric); members
+/// in the map get ZADD'd. `remove_members` get ZREM'd.
+#[tauri::command]
+async fn redis_zset_patch(
+    connection_id: &str,
+    key: &str,
+    set_members: std::collections::HashMap<String, f64>,
+    remove_members: Vec<String>,
+    ttl_seconds: Option<i64>,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_zset_patch requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let set_vec: Vec<(String, f64)> = set_members.into_iter().collect();
+    driver
+        .zset_patch(key, set_vec, remove_members, ttl_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// LSET each (index, value) pair in a single MULTI/EXEC transaction. Used
+/// when the user edited a list in place without changing its length;
+/// length-changing edits fall back to redis_set_key with the full list.
+#[tauri::command]
+async fn redis_list_set_indices(
+    connection_id: &str,
+    key: &str,
+    changes: Vec<(i64, String)>,
+    ttl_seconds: Option<i64>,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_list_set_indices requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .list_set_indices(key, changes, ttl_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// XADD a new entry to a stream. `entry_id` of "" lets Redis generate the
+/// timestamp-based ID; returns the assigned ID.
+#[tauri::command]
+async fn redis_stream_add(
+    connection_id: &str,
+    key: &str,
+    entry_id: &str,
+    fields: std::collections::HashMap<String, String>,
+    ttl_seconds: Option<i64>,
+) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_stream_add requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let pairs: Vec<(String, String)> = fields.into_iter().collect();
+    driver
+        .stream_add(key, entry_id, pairs, ttl_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// XDEL one or more stream entries by their IDs.
+#[tauri::command]
+async fn redis_stream_delete_entries(
+    connection_id: &str,
+    key: &str,
+    entry_ids: Vec<String>,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_stream_delete_entries requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .stream_delete_entries(key, entry_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// DEL N keys in a single Redis command. Returns the number of keys that
+/// actually existed and got deleted (so deleting an already-gone key
+/// doesn't inflate the count).
+#[tauri::command]
+async fn redis_delete_keys(connection_id: &str, keys: Vec<String>) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_delete_keys requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver.delete_keys(&keys).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn redis_delete_key(connection_id: &str, key: &str) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "redis" {
+        return Err(format!("redis_delete_key requires a redis connection; got '{}'", engine));
+    }
+    let driver = drivers::redis::RedisDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver.delete_key(key).await.map_err(|e| e.to_string())
+}
+
+// ============ Realtime Database writes ============
+
+/// PUT a JSON value at the given RTDB path. Replaces whatever was there.
+#[tauri::command]
+async fn rtdb_set(connection_id: &str, path: &str, value_json: &str) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err(format!("rtdb_set requires a firebase_rtdb connection; got '{}'", engine));
+    }
+    let driver = drivers::firebase_rtdb::RtdbDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .set_value(path, value_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// POST a JSON value to an RTDB node, letting the server generate a push
+/// key. Returns the generated key.
+#[tauri::command]
+async fn rtdb_push(connection_id: &str, path: &str, value_json: &str) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err(format!("rtdb_push requires a firebase_rtdb connection; got '{}'", engine));
+    }
+    let driver = drivers::firebase_rtdb::RtdbDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .push_value(path, value_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Partial-update an RTDB node — PATCH merges the JSON object at `path`,
+/// null values delete that key. Frontend computes the diff against the
+/// pre-edit value and sends only what changed.
+#[tauri::command]
+async fn rtdb_patch(
+    connection_id: &str,
+    path: &str,
+    partial_json: &str,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err(format!("rtdb_patch requires a firebase_rtdb connection; got '{}'", engine));
+    }
+    let driver = drivers::firebase_rtdb::RtdbDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .patch_value(path, partial_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Atomic bulk-delete of N RTDB children under a single parent node. One
+/// PATCH with {key1: null, key2: null, ...} — all-or-nothing per Firebase
+/// semantics. Returns the number of paths submitted (not necessarily the
+/// number that existed beforehand).
+#[tauri::command]
+async fn rtdb_delete_many(
+    connection_id: &str,
+    parent_path: &str,
+    child_keys: Vec<String>,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err(format!("rtdb_delete_many requires a firebase_rtdb connection; got '{}'", engine));
+    }
+    let driver = drivers::firebase_rtdb::RtdbDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_many_children(parent_path, &child_keys)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rtdb_delete(connection_id: &str, path: &str) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firebase_rtdb" {
+        return Err(format!("rtdb_delete requires a firebase_rtdb connection; got '{}'", engine));
+    }
+    let driver = drivers::firebase_rtdb::RtdbDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_value(path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ============ Firestore writes ============
+
+/// Create a Firestore document. `doc_id` is optional — when empty the
+/// server generates an ID. Returns the (server- or user-supplied) document
+/// ID so the UI can refresh and reflect the new row.
+#[tauri::command]
+async fn firestore_create_document(
+    connection_id: &str,
+    collection: &str,
+    doc_id: Option<&str>,
+    doc_json: &str,
+) -> Result<String, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_create_document requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let id = doc_id.filter(|s| !s.is_empty());
+    driver
+        .create_document(collection, id, doc_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn firestore_patch_document(
+    connection_id: &str,
+    collection: &str,
+    doc_id: &str,
+    doc_json: &str,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_patch_document requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .patch_document(collection, doc_id, doc_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Partial-update a Firestore document. Only the field paths the caller
+/// lists get touched (set or removed); other fields remain. Frontend
+/// computes the diff against the pre-edit document.
+#[tauri::command]
+async fn firestore_patch_document_fields(
+    connection_id: &str,
+    collection: &str,
+    doc_id: &str,
+    field_paths: Vec<String>,
+    fields_subset_json: &str,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_patch_document_fields requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .patch_document_fields(collection, doc_id, &field_paths, fields_subset_json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// List subcollection IDs under a Firestore document. `doc_path` is the
+/// path relative to `documents`, e.g. `users/abc` or `users/abc/posts/xyz`.
+/// Empty path returns top-level collections (same as `get_tables`).
+#[tauri::command]
+async fn firestore_list_subcollections(
+    connection_id: &str,
+    doc_path: &str,
+) -> Result<Vec<String>, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_list_subcollections requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .list_subcollections(doc_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Bulk-delete N top-level Firestore documents from a single collection
+/// via :commit batched writes. Returns the count of attempted deletes.
+#[tauri::command]
+async fn firestore_delete_many_documents(
+    connection_id: &str,
+    collection: &str,
+    doc_ids: Vec<String>,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_delete_many_documents requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_many_documents(collection, &doc_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn firestore_delete_document(
+    connection_id: &str,
+    collection: &str,
+    doc_id: &str,
+) -> Result<(), String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if engine != "firestore" {
+        return Err(format!("firestore_delete_document requires a firestore connection; got '{}'", engine));
+    }
+    let driver = drivers::firestore::FirestoreDriver::new(&conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .delete_document(collection, doc_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Run N SQL statements atomically inside a single transaction. Used by
+/// the inline-cell-editing batch save flow. SQL engines only.
+#[tauri::command]
+async fn execute_sql_batch(
+    connection_id: &str,
+    statements: Vec<String>,
+) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    match engine.as_str() {
+        "postgres" => {
+            let driver = drivers::postgres::PostgresDriver::new(&conn_str)
+                .await
+                .map_err(|e| e.to_string())?;
+            driver
+                .execute_batch(&statements)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "mysql" | "mariadb" => {
+            let driver = drivers::mysql::MysqlDriver::new(&conn_str)
+                .await
+                .map_err(|e| e.to_string())?;
+            driver
+                .execute_batch(&statements)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "sqlite" => {
+            let driver = drivers::sqlite::SqliteDriver::new(&conn_str)
+                .map_err(|e| e.to_string())?;
+            driver
+                .execute_batch(&statements)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        other => Err(format!(
+            "execute_sql_batch is only supported for SQL engines; got '{}'",
+            other
+        )),
+    }
+}
+
+/// Execute a non-row-returning SQL statement (INSERT / UPDATE / DELETE) and
+/// return the number of affected rows. SQL engines only — NoSQL engines
+/// each need their own write paths with different semantics.
+#[tauri::command]
+async fn execute_sql_statement(connection_id: &str, sql: &str) -> Result<u64, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    match engine.as_str() {
+        "postgres" => {
+            let driver = drivers::postgres::PostgresDriver::new(&conn_str)
+                .await
+                .map_err(|e| e.to_string())?;
+            driver.execute_statement(sql).await.map_err(|e| e.to_string())
+        }
+        "mysql" | "mariadb" => {
+            let driver = drivers::mysql::MysqlDriver::new(&conn_str)
+                .await
+                .map_err(|e| e.to_string())?;
+            driver.execute_statement(sql).await.map_err(|e| e.to_string())
+        }
+        "sqlite" => {
+            let driver = drivers::sqlite::SqliteDriver::new(&conn_str)
+                .map_err(|e| e.to_string())?;
+            driver.execute_statement(sql).await.map_err(|e| e.to_string())
+        }
+        other => Err(format!(
+            "execute_sql_statement is only supported for SQL engines; got '{}'",
+            other
+        )),
+    }
+}
+
 #[tauri::command]
 async fn query_db_paginated(
     connection_id: &str,
@@ -391,6 +1085,34 @@ pub fn run() {
             // Database operations
             query_db,
             query_db_paginated,
+            execute_sql_statement,
+            execute_sql_batch,
+            mongo_insert_one,
+            mongo_replace_one,
+            mongo_update_one,
+            mongo_delete_one,
+            mongo_delete_many,
+            firestore_create_document,
+            firestore_patch_document,
+            firestore_patch_document_fields,
+            firestore_delete_document,
+            firestore_delete_many_documents,
+            firestore_list_subcollections,
+            rtdb_set,
+            rtdb_push,
+            rtdb_patch,
+            rtdb_delete,
+            rtdb_delete_many,
+            redis_get_key,
+            redis_set_key,
+            redis_hash_patch,
+            redis_set_patch,
+            redis_zset_patch,
+            redis_list_set_indices,
+            redis_stream_add,
+            redis_stream_delete_entries,
+            redis_delete_key,
+            redis_delete_keys,
             test_connection,
             test_connection_by_id,
             // Schema exploration

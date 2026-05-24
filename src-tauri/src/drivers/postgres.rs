@@ -143,6 +143,65 @@ impl PostgresDriver {
         }
         Ok(results)
     }
+
+    /// Run N statements atomically inside a single transaction. If any
+    /// statement fails the whole batch rolls back per Postgres semantics.
+    /// Returns the number of statements actually run (not row counts —
+    /// tokio_postgres::batch_execute doesn't surface per-statement counts).
+    pub async fn execute_batch(&self, statements: &[String]) -> Result<u64, DriverError> {
+        if statements.is_empty() {
+            return Ok(0);
+        }
+        let mut sql = String::from("BEGIN;\n");
+        for s in statements {
+            sql.push_str(s.trim());
+            if !s.trim().ends_with(';') {
+                sql.push(';');
+            }
+            sql.push('\n');
+        }
+        sql.push_str("COMMIT;");
+
+        self.client
+            .batch_execute(&sql)
+            .await
+            .map_err(|e| {
+                let detail = if let Some(db_err) = e.as_db_error() {
+                    format!(
+                        "{} (SQLSTATE {}{})",
+                        db_err.message(),
+                        db_err.code().code(),
+                        db_err.hint().map(|h| format!(", hint: {}", h)).unwrap_or_default()
+                    )
+                } else {
+                    e.to_string()
+                };
+                DriverError::QueryFailed(detail)
+            })?;
+        Ok(statements.len() as u64)
+    }
+
+    /// Execute a non-row-returning statement (INSERT/UPDATE/DELETE) and
+    /// report how many rows it affected. Used by the schema-page write
+    /// flow; not part of the cross-engine DatabaseDriver trait.
+    pub async fn execute_statement(&self, sql: &str) -> Result<u64, DriverError> {
+        self.client
+            .execute(sql, &[])
+            .await
+            .map_err(|e| {
+                let detail = if let Some(db_err) = e.as_db_error() {
+                    format!(
+                        "{} (SQLSTATE {}{})",
+                        db_err.message(),
+                        db_err.code().code(),
+                        db_err.hint().map(|h| format!(", hint: {}", h)).unwrap_or_default()
+                    )
+                } else {
+                    e.to_string()
+                };
+                DriverError::QueryFailed(detail)
+            })
+    }
 }
 
 #[async_trait]

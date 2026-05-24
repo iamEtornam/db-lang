@@ -1,6 +1,8 @@
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Default page size when a Firestore query specifies a collection name with
 /// no structured query. Users who need more rows can pass a `limit` in the
@@ -90,6 +92,29 @@ impl FirestoreDriver {
         resp.json().await.map_err(|e| DriverError::QueryFailed(e.to_string()))
     }
 
+    /// List subcollection IDs under a specific document path. Called from
+    /// the schema page's drill-in flow. `doc_path` is the path relative to
+    /// `documents`, e.g. `users/abc` or `users/abc/posts/xyz`. Returns an
+    /// empty list if the document has no subcollections.
+    pub async fn list_subcollections(&self, doc_path: &str) -> Result<Vec<String>, DriverError> {
+        let trimmed = doc_path.trim_matches('/');
+        if trimmed.is_empty() {
+            return self.list_collection_ids().await;
+        }
+        let url = format!("{}/{}:listCollectionIds", self.base_url(), trimmed);
+        let resp = self.authed_post(&url, &json!({})).await?;
+        let ids = resp
+            .get("collectionIds")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ids)
+    }
+
     async fn list_collection_ids(&self) -> Result<Vec<String>, DriverError> {
         let url = format!("{}:listCollectionIds", self.base_url());
         let body = json!({});
@@ -123,6 +148,183 @@ impl FirestoreDriver {
             .unwrap_or_default();
 
         Ok(docs.into_iter().map(|d| firestore_doc_to_json(&d)).collect())
+    }
+
+    async fn authed_patch(&self, url: &str, body: &Value) -> Result<Value, DriverError> {
+        let token = self.auth.access_token(FIRESTORE_SCOPES).await?;
+        let resp = self
+            .http
+            .patch(url)
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("Firestore PATCH {} failed ({}): {}", url, status, body_text)));
+        }
+
+        resp.json().await.map_err(|e| DriverError::QueryFailed(e.to_string()))
+    }
+
+    async fn authed_delete(&self, url: &str) -> Result<(), DriverError> {
+        let token = self.auth.access_token(FIRESTORE_SCOPES).await?;
+        let resp = self
+            .http
+            .delete(url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(DriverError::QueryFailed(format!("Firestore DELETE {} failed ({}): {}", url, status, body)));
+        }
+        Ok(())
+    }
+
+    /// Create a document. When `doc_id` is Some, use the createDocument API
+    /// path with `documentId=<id>` (errors if the doc already exists). When
+    /// None, the server generates an ID. The provided JSON is wrapped as
+    /// Firestore typed values; `_id`/`_createTime`/`_updateTime` keys are
+    /// stripped because they're read-side metadata, not document fields.
+    pub async fn create_document(
+        &self,
+        collection: &str,
+        doc_id: Option<&str>,
+        doc_json: &str,
+    ) -> Result<String, DriverError> {
+        let fields_obj = parse_doc_object_stripped(doc_json)?;
+        let body = json!({ "fields": json_object_to_firestore_fields(&fields_obj) });
+
+        let url = match doc_id {
+            Some(id) if !id.is_empty() => {
+                format!(
+                    "{}/{}?documentId={}",
+                    self.base_url(),
+                    collection,
+                    urlencoding::encode(id)
+                )
+            }
+            _ => format!("{}/{}", self.base_url(), collection),
+        };
+
+        let resp = self.authed_post(&url, &body).await?;
+        let name = resp
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let new_id = name.rsplit('/').next().unwrap_or("").to_string();
+        Ok(new_id)
+    }
+
+    /// Replace a document's fields. Firestore's PATCH defaults to full
+    /// replacement of the document body (any field not in the request is
+    /// removed) — matching the "edit the whole JSON" UX in the dialog.
+    pub async fn patch_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        doc_json: &str,
+    ) -> Result<(), DriverError> {
+        let fields_obj = parse_doc_object_stripped(doc_json)?;
+        let body = json!({ "fields": json_object_to_firestore_fields(&fields_obj) });
+
+        let url = format!(
+            "{}/{}/{}",
+            self.base_url(),
+            collection,
+            urlencoding::encode(doc_id)
+        );
+        self.authed_patch(&url, &body).await?;
+        Ok(())
+    }
+
+    /// Partial-update a document — only the fields listed in `field_paths`
+    /// get touched. Removed fields (in `field_paths` but not in the body)
+    /// are deleted from the document; fields not in `field_paths` stay as
+    /// they are. Mirrors Firestore's REST `updateMask.fieldPaths` semantics.
+    pub async fn patch_document_fields(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        field_paths: &[String],
+        fields_subset_json: &str,
+    ) -> Result<(), DriverError> {
+        if field_paths.is_empty() {
+            return Ok(());
+        }
+        let fields_obj = parse_doc_object_stripped(fields_subset_json)?;
+        let body = json!({ "fields": json_object_to_firestore_fields(&fields_obj) });
+
+        // Repeated updateMask.fieldPaths query params; values URL-encoded.
+        // Excluded `_id` etc. — these were stripped on the dialog side
+        // already, but we'd reject them here too if they slipped through.
+        let mask_qs: String = field_paths
+            .iter()
+            .filter(|p| p.as_str() != "_id" && p.as_str() != "_createTime" && p.as_str() != "_updateTime")
+            .map(|p| format!("updateMask.fieldPaths={}", urlencoding::encode(p)))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let url = format!(
+            "{}/{}/{}?{}",
+            self.base_url(),
+            collection,
+            urlencoding::encode(doc_id),
+            mask_qs,
+        );
+        self.authed_patch(&url, &body).await?;
+        Ok(())
+    }
+
+    /// Delete N documents from a top-level collection via :commit (atomic
+    /// writes). Firestore caps a single commit at 500 writes; chunk over
+    /// that for larger selections. Returns the count of attempted deletes —
+    /// the API returns an empty writeResults for delete operations, so we
+    /// trust the chunk size rather than parsing per-write status.
+    pub async fn delete_many_documents(
+        &self,
+        collection: &str,
+        doc_ids: &[String],
+    ) -> Result<u64, DriverError> {
+        let url = format!("{}:commit", self.base_url());
+        let mut total: u64 = 0;
+        for chunk in doc_ids.chunks(500) {
+            let writes: Vec<Value> = chunk
+                .iter()
+                .map(|id| {
+                    // Resource name format that :commit expects.
+                    let name = format!(
+                        "projects/{}/databases/{}/documents/{}/{}",
+                        self.project_id,
+                        self.database_id,
+                        collection,
+                        id,
+                    );
+                    json!({ "delete": name })
+                })
+                .collect();
+            let body = json!({ "writes": writes });
+            self.authed_post(&url, &body).await?;
+            total += chunk.len() as u64;
+        }
+        Ok(total)
+    }
+
+    pub async fn delete_document(&self, collection: &str, doc_id: &str) -> Result<(), DriverError> {
+        let url = format!(
+            "{}/{}/{}",
+            self.base_url(),
+            collection,
+            urlencoding::encode(doc_id)
+        );
+        self.authed_delete(&url).await
     }
 
     async fn run_query(
@@ -170,6 +372,119 @@ impl FirestoreDriver {
         }
 
         Ok(rows)
+    }
+}
+
+/// Parse a JSON document, require it to be a top-level object, and remove
+/// the metadata keys the read path injects (`_id`, `_createTime`,
+/// `_updateTime`). Stripping happens here rather than in the caller so a
+/// hand-edited JSON can't accidentally smuggle metadata onto the wire.
+fn parse_doc_object_stripped(s: &str) -> Result<Map<String, Value>, DriverError> {
+    let v: Value = serde_json::from_str(s)
+        .map_err(|e| DriverError::QueryFailed(format!("Invalid JSON: {}", e)))?;
+    let mut obj = match v {
+        Value::Object(o) => o,
+        _ => return Err(DriverError::QueryFailed("Expected a JSON object at the root".into())),
+    };
+    obj.remove("_id");
+    obj.remove("_createTime");
+    obj.remove("_updateTime");
+    Ok(obj)
+}
+
+/// Wrap each entry of a JSON object as a typed Firestore field value. Used
+/// by both `create_document` and `patch_document` to assemble the `fields`
+/// part of the wire payload.
+fn json_object_to_firestore_fields(obj: &Map<String, Value>) -> Value {
+    let mut out = Map::new();
+    for (k, v) in obj {
+        out.insert(k.clone(), json_to_firestore_value(v));
+    }
+    Value::Object(out)
+}
+
+/// Matches ISO 8601 timestamps Firestore returns (e.g.
+/// `2024-01-15T03:04:05.123Z` or `2024-01-15T03:04:05-07:00`). Used by the
+/// type-hint heuristic so a value the read path collapsed to a string can
+/// round-trip back as a `timestampValue` instead of `stringValue`.
+fn iso_timestamp_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$",
+        )
+        .expect("static regex compiles")
+    })
+}
+
+/// Detect the `{latitude: f, longitude: f}` shape Firestore returns for
+/// geopoint fields after the read path strips the wrapper. Returns the
+/// geoPointValue payload if the object matches exactly that shape (two
+/// keys, both numeric, in their canonical lat/long ranges).
+fn try_geopoint(obj: &Map<String, Value>) -> Option<Value> {
+    if obj.len() != 2 { return None; }
+    let lat = obj.get("latitude")?.as_f64()?;
+    let lng = obj.get("longitude")?.as_f64()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+        return None;
+    }
+    Some(json!({ "latitude": lat, "longitude": lng }))
+}
+
+/// Convert a plain JSON value to Firestore's typed `Value` wire format —
+/// inverse of `firestore_value_to_json`. Type detection follows the same
+/// shape Firestore's REST API produces:
+///   - JSON null  -> { nullValue: null }
+///   - bool       -> { booleanValue: ... }
+///   - integer    -> { integerValue: "N" } (string per Firestore convention)
+///   - float      -> { doubleValue: ... }
+///   - string matching ISO 8601 -> { timestampValue: "..." }
+///   - other string -> { stringValue: "..." }
+///   - object shaped {latitude, longitude} -> { geoPointValue: { ... } }
+///   - other object -> { mapValue: { fields: {...} } }
+///   - array      -> { arrayValue: { values: [...] } }
+///
+/// Heuristics for timestamp + geopoint preserve round-trip on the two most
+/// common typed fields. References, byte strings, and document refs still
+/// collapse to strings — they need explicit type hints to round-trip.
+fn json_to_firestore_value(val: &Value) -> Value {
+    match val {
+        Value::Null => json!({ "nullValue": null }),
+        Value::Bool(b) => json!({ "booleanValue": b }),
+        Value::Number(n) => {
+            if n.is_i64() {
+                // Firestore expects integerValue as a string-encoded int.
+                json!({ "integerValue": n.as_i64().unwrap().to_string() })
+            }
+            else if n.is_u64() {
+                json!({ "integerValue": n.as_u64().unwrap().to_string() })
+            }
+            else if let Some(f) = n.as_f64() {
+                json!({ "doubleValue": f })
+            }
+            else {
+                json!({ "stringValue": n.to_string() })
+            }
+        }
+        Value::String(s) => {
+            if iso_timestamp_regex().is_match(s) {
+                json!({ "timestampValue": s })
+            }
+            else {
+                json!({ "stringValue": s })
+            }
+        }
+        Value::Array(arr) => {
+            let values: Vec<Value> = arr.iter().map(json_to_firestore_value).collect();
+            json!({ "arrayValue": { "values": values } })
+        }
+        Value::Object(obj) => {
+            if let Some(geo) = try_geopoint(obj) {
+                return json!({ "geoPointValue": geo });
+            }
+            let fields = json_object_to_firestore_fields(obj);
+            json!({ "mapValue": { "fields": fields } })
+        }
     }
 }
 

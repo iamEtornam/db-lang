@@ -10,8 +10,6 @@ import { engines, buildConnectionString, isMongoUri, type DatabaseEngine } from 
 import { useConnectionsStore } from '~/stores/connections'
 import type { Connection } from '~/types/database'
 
-const router = useRouter()
-
 const props = defineProps<{
   editConnection?: Connection | null
 }>()
@@ -251,34 +249,11 @@ async function saveConnection() {
         auth_json: form.value.auth_json || '',
       })
 
-      // Close dialog first
       open.value = false
       resetForm()
-
-      toast.loading(`Connecting to ${result.name}...`, { id: 'connecting' })
-
-      try {
-        await invoke<boolean>('test_connection_by_id', {
-          connectionId: result.id,
-        })
-
-        toast.success(`Connected to ${result.name}`, { id: 'connecting' })
-
-        // Load schema in background
-        connectionsStore.loadSchema().then(() => {
-          if (connectionsStore.tables.length > 0) {
-            toast.success(`Schema loaded: ${connectionsStore.tables.length} tables`)
-          }
-        })
-
-        router.push('/')
-      }
-      catch (err) {
-        toast.error(`Saved but could not connect to ${result.name}`, {
-          id: 'connecting',
-          description: err as string,
-        })
-      }
+      toast.success(`Saved ${result.name}`, {
+        description: 'Click the connection in the sidebar to connect.',
+      })
     }
   }
   catch (err) {
