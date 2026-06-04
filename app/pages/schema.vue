@@ -1466,18 +1466,22 @@ function openBulkDelete() {
                           />
                           <Icon v-else name="lucide:folder-tree" class="size-3.5" />
                         </button>
+                        <!-- Edit / Delete stay visible at all times so they
+                             never look "removed"; when the table can't be
+                             safely targeted (no PK / _id / _key / Redis key)
+                             they're disabled and the reason shows on hover. -->
                         <button
-                          v-if="canWrite"
-                          class="rounded p-1 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                          title="Edit row"
+                          class="rounded p-1 text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                          :disabled="!canWrite"
+                          :title="canWrite ? 'Edit row' : writeBlockedReason"
                           @click.stop="openEdit(row)"
                         >
                           <Icon name="lucide:pencil" class="size-3.5" />
                         </button>
                         <button
-                          v-if="canWrite"
-                          class="rounded p-1 hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
-                          title="Delete row"
+                          class="rounded p-1 text-muted-foreground transition-colors enabled:hover:bg-destructive/20 enabled:hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
+                          :disabled="!canWrite"
+                          :title="canWrite ? 'Delete row' : writeBlockedReason"
                           @click.stop="openDelete(row)"
                         >
                           <Icon name="lucide:trash-2" class="size-3.5" />
