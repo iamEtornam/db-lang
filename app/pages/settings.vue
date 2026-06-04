@@ -106,6 +106,11 @@ const providers = [
 const ollamaModels = ref<string[]>([])
 const isFetchingOllamaModels = ref(false)
 
+// Gemini models fetched live from the ListModels API. The hardcoded list above
+// is the offline fallback; once fetched, these take precedence.
+const geminiModels = ref<string[]>([])
+const isFetchingGeminiModels = ref(false)
+
 const currentProvider = computed(() =>
   providers.find(p => p.id === llmConfig.value.provider),
 )
@@ -113,6 +118,9 @@ const currentProvider = computed(() =>
 const availableModels = computed(() => {
   if (llmConfig.value.provider === 'ollama' && ollamaModels.value.length > 0) {
     return ollamaModels.value
+  }
+  if (llmConfig.value.provider === 'gemini' && geminiModels.value.length > 0) {
+    return geminiModels.value
   }
   return currentProvider.value?.models ?? []
 })
@@ -146,11 +154,71 @@ async function fetchOllamaModels() {
   }
 }
 
+/** Fetch the current Gemini model catalog via the ListModels REST endpoint,
+ *  keeping only models that support `generateContent` (the method the app
+ *  uses for translation — this filters out embedding / aqa models). The API
+ *  key is passed as a query param, which is how the Gemini API authenticates;
+ *  the host is already whitelisted in the CSP connect-src. */
+async function fetchGeminiModels() {
+  const apiKey = llmConfig.value.api_key?.trim()
+  if (!apiKey) {
+    toast.error('Enter your Gemini API key first')
+    return
+  }
+  isFetchingGeminiModels.value = true
+
+  try {
+    // pageSize=1000 returns the whole catalog in one page (Gemini exposes far
+    // fewer than that), so we don't need to follow nextPageToken.
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${encodeURIComponent(apiKey)}`,
+    )
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`
+      try {
+        const errBody = await response.json()
+        detail = errBody?.error?.message ?? detail
+      }
+      catch { /* response wasn't JSON — keep the status code */ }
+      throw new Error(detail)
+    }
+    const data = await response.json()
+    const models: string[] = (data.models ?? [])
+      .filter((m: { supportedGenerationMethods?: string[] }) =>
+        m.supportedGenerationMethods?.includes('generateContent'))
+      // Names come back as "models/gemini-2.5-pro"; strip the prefix.
+      .map((m: { name: string }) => m.name.replace(/^models\//, ''))
+
+    geminiModels.value = models
+    if (models.length === 0) {
+      toast.error('No Gemini models support generateContent for this key')
+      return
+    }
+    // Only override the selection if the saved model isn't in the live list.
+    if (!models.includes(llmConfig.value.model)) {
+      llmConfig.value.model = models[0]!
+    }
+    toast.success(`Found ${models.length} Gemini models`)
+  }
+  catch (err) {
+    geminiModels.value = []
+    toast.error('Could not fetch Gemini models', {
+      description: err instanceof Error ? err.message : String(err),
+    })
+  }
+  finally {
+    isFetchingGeminiModels.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     llmConfig.value = await invoke<LlmConfig>('get_llm_config')
     if (llmConfig.value.provider === 'ollama') {
       fetchOllamaModels()
+    }
+    else if (llmConfig.value.provider === 'gemini' && llmConfig.value.api_key) {
+      fetchGeminiModels()
     }
   }
   catch (err) {
@@ -159,11 +227,17 @@ onMounted(async () => {
 })
 
 watch(() => llmConfig.value.provider, (provider) => {
+  ollamaModels.value = []
+  geminiModels.value = []
   if (provider === 'ollama') {
     fetchOllamaModels()
     return
   }
-  ollamaModels.value = []
+  if (provider === 'gemini' && llmConfig.value.api_key) {
+    // Refresh the live list on switch; fetchGeminiModels picks the model.
+    fetchGeminiModels()
+    return
+  }
   const p = providers.find(pr => pr.id === provider)
   if (p?.models.length) {
     llmConfig.value.model = p.models[0]
@@ -250,6 +324,19 @@ async function saveConfig() {
             <Icon v-if="isFetchingOllamaModels" name="lucide:loader-2" class="size-3 animate-spin" />
             <Icon v-else name="lucide:refresh-cw" class="size-3" />
             {{ ollamaModels.length > 0 ? `${ollamaModels.length} local models` : 'Fetch models' }}
+          </Button>
+          <Button
+            v-else-if="llmConfig.provider === 'gemini'"
+            size="sm"
+            variant="ghost"
+            class="h-6 px-2 text-xs gap-1"
+            :disabled="isFetchingGeminiModels || !llmConfig.api_key"
+            :title="!llmConfig.api_key ? 'Enter your API key first' : 'Fetch the latest models from Google'"
+            @click="fetchGeminiModels"
+          >
+            <Icon v-if="isFetchingGeminiModels" name="lucide:loader-2" class="size-3 animate-spin" />
+            <Icon v-else name="lucide:refresh-cw" class="size-3" />
+            {{ geminiModels.length > 0 ? `${geminiModels.length} models` : 'Fetch latest' }}
           </Button>
         </div>
         <template v-if="availableModels.length > 0">
