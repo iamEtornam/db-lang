@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New Vue component `RtdbWatchPanel.vue` for live-watching RTDB paths.
 - Engine-aware AI query translation: the `QueryDialect` enum drives separate prompts for SQL, MongoDB, Redis, Firestore, and Realtime DB. The Firestore and RTDB prompts explicitly forbid SQL output.
 - 19 unit tests across `gemini`, `firestore`, and `firebase_auth` covering query-dialect dispatch, prompt content, blob round-tripping, and Firestore input validation.
+- **Schema row detail viewer**: a per-row **View** action (eye icon) on the preview tab opens a read-only dialog showing every field expanded — full values, pretty-printed JSON, per-field copy, and "Copy as JSON". New Vue component `RowDetailDialog.vue`. The per-row actions cell now renders for every engine; View is always available since it's read-only, while Edit/Delete stay gated on writability (PK / `_id` / `_key` / Redis key).
+- **Live Gemini model list** in Settings: a "Fetch latest" button calls the Gemini ListModels REST API, keeps only models that support `generateContent` (filtering out embedding / `aqa` models), strips the `models/` prefix, and populates the model dropdown. Auto-fetches on mount and when switching to Gemini with an API key present; falls back to the bundled list offline. Mirrors the existing Ollama fetch flow.
 
 ### Fixed
 
@@ -25,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Firestore driver now rejects SQL-looking input with a clear error (`Firestore does not support SQL...`) instead of silently returning zero rows.
 - Firestore driver rejects collection names containing whitespace or other non-identifier characters.
 - Connection dialog's "Test" button no longer fails with `Expected firebase:// prefix` for Firebase engines. The dialog now asks the backend to build the proper base64 connection blob before testing.
+- Schema and other pages no longer scroll as a single block when content overflows. The app shell is pinned to the viewport (`h-svh`) with `<main>` as the scroll container, so the schema table list and the column/preview panes scroll independently, while grow-style pages (History, Settings) scroll within the content area.
 
 ### Changed
 
