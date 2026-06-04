@@ -28,8 +28,9 @@ const typeByName = computed(() => {
  *  table renders columns and keeps synthetic NoSQL fields (_id, _key …)
  *  visible even when they aren't in `columns`. */
 const fields = computed<{ name: string; value: unknown }[]>(() => {
-  if (!props.row) return []
-  return Object.keys(props.row).map(name => ({ name, value: props.row![name] }))
+  const row = props.row
+  if (!row) return []
+  return Object.keys(row).map(name => ({ name, value: row[name] }))
 })
 
 function isNullish(val: unknown): boolean {
@@ -42,20 +43,26 @@ function displayValue(val: unknown): string {
   return String(val)
 }
 
+/** Write to the clipboard, reporting success only once the async write
+ *  actually resolves. Guards against environments where the Clipboard API
+ *  isn't available so we don't claim success on a failed/absent copy. */
+function writeClipboard(text: string, successMsg: string) {
+  if (!navigator.clipboard) {
+    toast.error('Clipboard is not available in this context')
+    return
+  }
+  navigator.clipboard.writeText(text)
+    .then(() => toast.success(successMsg))
+    .catch(err => toast.error('Failed to copy', { description: String(err) }))
+}
+
 function copyValue(val: unknown) {
-  if (isNullish(val)) {
-    navigator.clipboard.writeText('')
-  }
-  else {
-    navigator.clipboard.writeText(displayValue(val))
-  }
-  toast.success('Copied to clipboard')
+  writeClipboard(isNullish(val) ? '' : displayValue(val), 'Copied to clipboard')
 }
 
 function copyRowJson() {
   if (!props.row) return
-  navigator.clipboard.writeText(JSON.stringify(props.row, null, 2))
-  toast.success('Copied row as JSON')
+  writeClipboard(JSON.stringify(props.row, null, 2), 'Copied row as JSON')
 }
 </script>
 
