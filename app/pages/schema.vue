@@ -41,6 +41,7 @@ import {
   type RedisKeyView,
 } from '~/lib/redis'
 import RowEditDialog from '~/components/schema/RowEditDialog.vue'
+import RowDetailDialog from '~/components/schema/RowDetailDialog.vue'
 import SqlConfirmDialog from '~/components/schema/SqlConfirmDialog.vue'
 import MongoOpDialog from '~/components/schema/MongoOpDialog.vue'
 import FirestoreOpDialog from '~/components/schema/FirestoreOpDialog.vue'
@@ -125,6 +126,18 @@ const previewColumns = computed(() =>
  *  horizontal scrolling; tapping a row reveals them in case the desktop
  *  hover affordance isn't available (touch / trackpad tap). */
 const selectedRowIndex = ref<number | null>(null)
+
+// Read-only "view full row" dialog. Available for every engine — including
+// read-only ones — since it never writes. Truncated preview cells (capped at
+// 200px) and stringified JSON objects make the inline table a poor place to
+// read a whole row, so this expands the selected row into a key/value view.
+const rowDetailOpen = ref(false)
+const rowDetailRow = ref<Record<string, unknown> | null>(null)
+
+function openRowDetail(row: Record<string, unknown>) {
+  rowDetailRow.value = row
+  rowDetailOpen.value = true
+}
 
 watch(selectedTableName, async (name) => {
   if (!name) return
@@ -1351,7 +1364,6 @@ function openBulkDelete() {
                       {{ col }}
                     </th>
                     <th
-                      v-if="canWrite"
                       class="sticky top-0 right-0 z-20 bg-muted/80 backdrop-blur-sm border-b border-l border-border w-28 px-2 py-2"
                     />
                   </tr>
@@ -1417,7 +1429,6 @@ function openBulkDelete() {
                       </template>
                     </td>
                     <td
-                      v-if="canWrite"
                       class="sticky right-0 z-10 border-b border-l border-border px-2 py-1 w-28 backdrop-blur-sm transition-colors"
                       :class="selectedRowIndex === i ? 'bg-muted/40' : 'bg-background/80 group-hover:bg-muted/20'"
                     >
@@ -1430,6 +1441,15 @@ function openBulkDelete() {
                         class="flex items-center justify-end gap-1 transition-opacity relative"
                         :class="selectedRowIndex === i ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
                       >
+                        <!-- View full row — read-only, available for every
+                             engine including those that block writes. -->
+                        <button
+                          class="rounded p-1 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                          title="View row"
+                          @click.stop="openRowDetail(row)"
+                        >
+                          <Icon name="lucide:eye" class="size-3.5" />
+                        </button>
                         <!-- Phase 8: per-row Subcollections drill-in for
                              Firestore documents. The popover is inline-absolute
                              so it floats over neighbouring rows when open. -->
@@ -1447,6 +1467,7 @@ function openBulkDelete() {
                           <Icon v-else name="lucide:folder-tree" class="size-3.5" />
                         </button>
                         <button
+                          v-if="canWrite"
                           class="rounded p-1 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
                           title="Edit row"
                           @click.stop="openEdit(row)"
@@ -1454,6 +1475,7 @@ function openBulkDelete() {
                           <Icon name="lucide:pencil" class="size-3.5" />
                         </button>
                         <button
+                          v-if="canWrite"
                           class="rounded p-1 hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
                           title="Delete row"
                           @click.stop="openDelete(row)"
@@ -1628,6 +1650,14 @@ function openBulkDelete() {
       v-model:open="exportOpen"
       :data="exportData"
       :columns="previewColumns"
+    />
+
+    <!-- Read-only full-row viewer — available for every engine. -->
+    <RowDetailDialog
+      v-model:open="rowDetailOpen"
+      :row="rowDetailRow"
+      :columns="selectedColumns"
+      :table-name="selectedTable?.name ?? ''"
     />
 
     <!-- NoSQL bulk-delete dialog (SQL bulk goes through SqlConfirmDialog). -->
