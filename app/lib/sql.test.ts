@@ -252,7 +252,20 @@ describe('buildUpdate', () => {
         [{ column: 'name', value: 'X' }],
         [],
       ),
-    ).toThrow(/PK column is required/)
+    ).toThrow(/column is required/)
+  })
+  it('null identity value renders IS NULL in WHERE (keyless table)', () => {
+    const sql = buildUpdate(
+      'postgres',
+      'logs',
+      null,
+      [{ column: 'msg', value: 'updated' }],
+      [
+        { column: 'level', value: 'info' },
+        { column: 'note', value: null },
+      ],
+    )
+    expect(sql).toContain(`WHERE "level" = 'info' AND "note" IS NULL;`)
   })
 })
 
@@ -270,6 +283,16 @@ describe('buildDelete', () => {
     ])
     expect(sql).toBe(
       'DELETE FROM `user_roles`\nWHERE `user_id` = 1 AND `role_id` = 2;',
+    )
+  })
+  it('keyless delete matches every column, with IS NULL for nulls', () => {
+    const sql = buildDelete('postgres', 'logs', null, [
+      { column: 'level', value: 'info' },
+      { column: 'msg', value: 'boot' },
+      { column: 'note', value: null },
+    ])
+    expect(sql).toBe(
+      `DELETE FROM "logs"\nWHERE "level" = 'info' AND "msg" = 'boot' AND "note" IS NULL;`,
     )
   })
 })
