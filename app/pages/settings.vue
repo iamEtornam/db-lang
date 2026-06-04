@@ -183,11 +183,15 @@ async function fetchGeminiModels() {
       throw new Error(detail)
     }
     const data = await response.json()
-    const models: string[] = (data.models ?? [])
-      .filter((m: { supportedGenerationMethods?: string[] }) =>
-        m.supportedGenerationMethods?.includes('generateContent'))
+    // Defensive: the body could be null, a non-object, or missing `models`
+    // entirely if the API returns an unexpected payload. Guard before iterating.
+    const rawModels: Array<{ name?: string; supportedGenerationMethods?: string[] }>
+      = Array.isArray(data?.models) ? data.models : []
+    const models: string[] = rawModels
+      .filter(m => m?.supportedGenerationMethods?.includes('generateContent'))
       // Names come back as "models/gemini-2.5-pro"; strip the prefix.
-      .map((m: { name: string }) => m.name.replace(/^models\//, ''))
+      .map(m => m.name?.replace(/^models\//, '') ?? '')
+      .filter(Boolean)
 
     geminiModels.value = models
     if (models.length === 0) {
