@@ -131,15 +131,23 @@ export interface PkBinding {
   value: unknown
 }
 
-/** Render `col1 = v1 AND col2 = v2` from a list of PK bindings. Each row
- *  is uniquely identified by the tuple of all its PK columns; this helper
- *  is the shared chokepoint for UPDATE / single-row DELETE / row identity. */
+/** Render `col1 = v1 AND col2 = v2` from a list of bindings. Each row is
+ *  targeted by the tuple of these columns; this is the shared chokepoint for
+ *  UPDATE / single-row DELETE / row identity. The columns are usually the PK,
+ *  but for keyless tables the caller passes every column so a row can still be
+ *  matched by its full content. NULL values render as `IS NULL` (a plain
+ *  `= NULL` never matches in SQL). */
 function pkEqualityClause(engine: string, pks: PkBinding[]): string {
   if (pks.length === 0) {
-    throw new Error('At least one PK column is required to target a row')
+    throw new Error('At least one column is required to target a row')
   }
   return pks
-    .map(pk => `${quoteIdentifier(engine, pk.column)} = ${quoteValue(engine, pk.value)}`)
+    .map((pk) => {
+      const col = quoteIdentifier(engine, pk.column)
+      return pk.value === null || pk.value === undefined
+        ? `${col} IS NULL`
+        : `${col} = ${quoteValue(engine, pk.value)}`
+    })
     .join(' AND ')
 }
 

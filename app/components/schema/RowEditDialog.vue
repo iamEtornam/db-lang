@@ -15,8 +15,13 @@ const props = defineProps<{
   schema: string | null
   columns: ColumnInfo[]
   /** All PK columns. Single-element array for the common case; longer for
-   *  composite PKs. Empty array means no PK and the dialog refuses to edit. */
+   *  composite PKs. Empty array means the table has no PK — those columns are
+   *  then editable rather than locked, and `identityColumns` drives the WHERE. */
   pkColumns: string[]
+  /** Columns used to target the row in the UPDATE WHERE clause. Equals
+   *  `pkColumns` when a PK exists; for keyless tables the parent passes every
+   *  column so the row is matched by its full (original) content. */
+  identityColumns: string[]
   initialRow: Record<string, unknown> | null
 }>()
 
@@ -173,25 +178,21 @@ const isPkColumn = (name: string) => pkColumnSet.value.has(name)
 function onSave() {
   formError.value = null
 
-  let pkBindings: PkBinding[] = []
+  const pkBindings: PkBinding[] = []
   if (props.mode === 'edit') {
-    if (props.pkColumns.length === 0) {
-      formError.value = 'Cannot update — this table has no primary key.'
+    if (props.identityColumns.length === 0) {
+      formError.value = 'Cannot update — no columns available to target this row.'
       return
     }
     if (!props.initialRow) {
       formError.value = 'Internal error: missing row state.'
       return
     }
-    // Every PK column must have a non-null value to target a unique row;
-    // a null PK value would silently match arbitrary rows.
-    for (const col of props.pkColumns) {
-      const v = props.initialRow[col]
-      if (v === null || v === undefined) {
-        formError.value = `Primary key '${col}' is null on this row — cannot target it safely.`
-        return
-      }
-      pkBindings.push({ column: col, value: v })
+    // Target the row by its identity columns' original values. For a real PK
+    // that's the key; for a keyless table it's every column, matched on
+    // original content (null -> IS NULL via the SQL builder).
+    for (const col of props.identityColumns) {
+      pkBindings.push({ column: col, value: props.initialRow[col] })
     }
   }
 

@@ -279,6 +279,31 @@ const pkColumns = computed<string[]>(() => {
 })
 
 const canWrite = computed(() => engineKind.value !== 'other' && pkColumns.value.length > 0)
+
+/** Columns used to target a single row in UPDATE/DELETE WHERE clauses. When a
+ *  real key exists (PK / _id / _key / Redis key) we use it. For keyless SQL
+ *  tables we fall back to *every* column so the row can still be matched by
+ *  its full content — the generated SQL is always shown for review first. */
+const identityColumns = computed<string[]>(() => {
+  if (pkColumns.value.length > 0) return pkColumns.value
+  if (engineKind.value === 'sql') return selectedColumns.value.map(c => c.name)
+  return []
+})
+
+/** Whether the per-row Edit/Delete actions can run. SQL can always target a
+ *  row (by PK, or by full row when keyless); the other engines still need
+ *  their id since their drivers address documents/keys by it. */
+const canEditRow = computed(() => {
+  if (engineKind.value === 'sql') return identityColumns.value.length > 0
+  return canWrite.value
+})
+
+/** True for a SQL table with no primary key — Edit/Delete still work but match
+ *  on the whole row, so we warn that duplicate rows would be affected together. */
+const sqlNoPkFallback = computed(() =>
+  engineKind.value === 'sql' && pkColumns.value.length === 0 && selectedColumns.value.length > 0,
+)
+
 const writeBlockedReason = computed(() => {
   if (engineKind.value === 'other') {
     return 'Editing for this engine is coming in a future update.'
@@ -695,7 +720,7 @@ function openInsert() {
 }
 
 function openEdit(row: Record<string, unknown>) {
-  if (!canWrite.value) return
+  if (!canEditRow.value) return
   if (engineKind.value === 'sql') {
     rowEditMode.value = 'edit'
     rowEditTarget.value = row
@@ -772,16 +797,14 @@ function openEdit(row: Record<string, unknown>) {
 }
 
 function openDelete(row: Record<string, unknown>) {
-  if (!canWrite.value || !selectedTable.value) return
-  if (engineKind.value === 'sql' && pkColumns.value.length > 0) {
-    const pkBindings: PkBinding[] = []
-    for (const col of pkColumns.value) {
-      const v = row[col]
-      if (v === null || v === undefined) {
-        toast.error(`Primary key '${col}' is null on this row — cannot delete safely.`)
-        return
-      }
-      pkBindings.push({ column: col, value: v })
+  if (!canEditRow.value || !selectedTable.value) return
+  if (engineKind.value === 'sql') {
+    // Target by PK when present, else by every column (null -> IS NULL). The
+    // full statement is shown in the confirm dialog before it runs.
+    const pkBindings: PkBinding[] = identityColumns.value.map(col => ({ column: col, value: row[col] }))
+    if (pkBindings.length === 0) {
+      toast.error('No columns available to target this row.')
+      return
     }
     sqlConfirmInitial.value = buildDelete(
       activeConnection.value!.db_type,
@@ -1322,11 +1345,14 @@ function openBulkDelete() {
                   Discard
                 </Button>
               </div>
-              <p v-if="engineKind !== 'other' && !canWrite && selectedColumns.length > 0" class="text-[11px] text-muted-foreground italic">
+              <p v-if="sqlNoPkFallback" class="text-[11px] text-amber-500/90 italic">
+                No primary key — Edit/Delete match on every column, so identical rows are affected together. Review the SQL before running.
+              </p>
+              <p v-else-if="engineKind !== 'other' && !canEditRow && selectedColumns.length > 0" class="text-[11px] text-muted-foreground italic">
                 {{ writeBlockedReason }}
               </p>
               <p
-                v-else-if="engineKind === 'sql' && canWrite && pendingEdits.size === 0"
+                v-else-if="engineKind === 'sql' && pkColumns.length > 0 && pendingEdits.size === 0"
                 class="text-[11px] text-muted-foreground italic"
               >
                 Double-click a cell to edit · Enter saves, Esc cancels
@@ -1472,16 +1498,16 @@ function openBulkDelete() {
                              they're disabled and the reason shows on hover. -->
                         <button
                           class="rounded p-1 text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                          :disabled="!canWrite"
-                          :title="canWrite ? 'Edit row' : writeBlockedReason"
+                          :disabled="!canEditRow"
+                          :title="!canEditRow ? writeBlockedReason : (sqlNoPkFallback ? 'Edit row (no primary key — matches the whole row)' : 'Edit row')"
                           @click.stop="openEdit(row)"
                         >
                           <Icon name="lucide:pencil" class="size-3.5" />
                         </button>
                         <button
                           class="rounded p-1 text-muted-foreground transition-colors enabled:hover:bg-destructive/20 enabled:hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
-                          :disabled="!canWrite"
-                          :title="canWrite ? 'Delete row' : writeBlockedReason"
+                          :disabled="!canEditRow"
+                          :title="!canEditRow ? writeBlockedReason : (sqlNoPkFallback ? 'Delete row (no primary key — matches the whole row)' : 'Delete row')"
                           @click.stop="openDelete(row)"
                         >
                           <Icon name="lucide:trash-2" class="size-3.5" />
@@ -1560,6 +1586,7 @@ function openBulkDelete() {
       :schema="selectedTable.schema ?? null"
       :columns="selectedColumns"
       :pk-columns="pkColumns"
+      :identity-columns="identityColumns"
       :initial-row="rowEditTarget"
       @confirm="onRowEditConfirm"
     />
