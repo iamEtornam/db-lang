@@ -1,0 +1,46 @@
+[
+  {
+    "name": "List tables with row counts",
+    "description": "Estimated row count for every table in the current database, largest first.",
+    "query_language": "sql",
+    "tags": "tables,overview",
+    "params": [],
+    "body": "SELECT table_name, table_rows AS estimated_rows\nFROM information_schema.tables\nWHERE table_schema = DATABASE()\nORDER BY table_rows DESC;"
+  },
+  {
+    "name": "Table sizes on disk",
+    "description": "Data + index size per table, largest first.",
+    "query_language": "sql",
+    "tags": "size,storage",
+    "params": [],
+    "body": "SELECT table_name,\n       ROUND((data_length + index_length) / 1024 / 1024, 2) AS size_mb\nFROM information_schema.tables\nWHERE table_schema = DATABASE()\nORDER BY (data_length + index_length) DESC;"
+  },
+  {
+    "name": "Unused / low-cardinality indexes",
+    "description": "Indexes whose first column has very few distinct values. Review for usefulness.",
+    "query_language": "sql",
+    "tags": "indexes,maintenance",
+    "params": [],
+    "body": "SELECT table_name, index_name, cardinality\nFROM information_schema.statistics\nWHERE table_schema = DATABASE() AND seq_in_index = 1\nORDER BY cardinality ASC;"
+  },
+  {
+    "name": "Largest tables by rows",
+    "description": "Top N tables by estimated row count.",
+    "query_language": "sql",
+    "tags": "tables,size",
+    "params": [
+      { "name": "limit", "label": "Number of tables", "type": "number", "default": "10" }
+    ],
+    "body": "SELECT table_name, table_rows\nFROM information_schema.tables\nWHERE table_schema = DATABASE()\nORDER BY table_rows DESC\nLIMIT {{limit}};"
+  },
+  {
+    "name": "Column overview for a table",
+    "description": "Columns, types and nullability for a given table.",
+    "query_language": "sql",
+    "tags": "columns,schema",
+    "params": [
+      { "name": "table", "label": "Table name", "type": "table-name" }
+    ],
+    "body": "SELECT column_name, column_type, is_nullable, column_default\nFROM information_schema.columns\nWHERE table_schema = DATABASE() AND table_name = '{{table}}'\nORDER BY ordinal_position;"
+  }
+]

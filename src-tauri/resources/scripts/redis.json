@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Keyspace summary",
+    "description": "Server keyspace section: per-database key counts and expirations.",
+    "query_language": "redis",
+    "tags": "keyspace,overview",
+    "params": [],
+    "body": "INFO keyspace"
+  },
+  {
+    "name": "Total key count",
+    "description": "Number of keys in the current database.",
+    "query_language": "redis",
+    "tags": "keyspace,count",
+    "params": [],
+    "body": "DBSIZE"
+  },
+  {
+    "name": "Scan keys by pattern",
+    "description": "List keys matching a glob pattern. Use sparingly on large databases.",
+    "query_language": "redis",
+    "tags": "keys,scan",
+    "params": [
+      { "name": "pattern", "label": "Match pattern", "type": "string", "default": "*" }
+    ],
+    "body": "KEYS {{pattern}}"
+  },
+  {
+    "name": "Inspect a key",
+    "description": "Show the type and remaining TTL of a key.",
+    "query_language": "redis",
+    "tags": "keys,inspect",
+    "params": [
+      { "name": "key", "label": "Key name", "type": "string" }
+    ],
+    "body": "TYPE {{key}}\nTTL {{key}}"
+  }
+]
