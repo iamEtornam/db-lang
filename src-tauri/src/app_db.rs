@@ -85,6 +85,23 @@ pub struct Chart {
     pub updated_at: String,
 }
 
+/// Saved/built-in script model (multi-statement, optional typed params)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Script {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    /// JSON array of param definitions (see frontend ScriptParam type). "[]" when none.
+    pub params_json: String,
+    pub tags: String,
+    pub is_builtin: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// User settings model (no auth - single local user)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
@@ -92,6 +109,8 @@ pub struct UserSettings {
     pub default_page_size: i32,
     pub query_timeout_seconds: i32,
     pub auto_save_history: bool,
+    /// Max rows of a result set sent to the LLM when explaining results.
+    pub explain_max_rows: i32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -214,6 +233,24 @@ impl AppDatabase {
             [],
         )?;
 
+        // Scripts table (saved multi-statement scripts + bundled built-in library)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scripts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                engine TEXT NOT NULL DEFAULT '',
+                query_language TEXT NOT NULL DEFAULT 'sql',
+                body TEXT NOT NULL,
+                params_json TEXT NOT NULL DEFAULT '[]',
+                tags TEXT NOT NULL DEFAULT '',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // User settings table (single row, no user_id foreign key)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_settings (
@@ -222,11 +259,21 @@ impl AppDatabase {
                 default_page_size INTEGER NOT NULL DEFAULT 50,
                 query_timeout_seconds INTEGER NOT NULL DEFAULT 30,
                 auto_save_history INTEGER NOT NULL DEFAULT 1,
+                explain_max_rows INTEGER NOT NULL DEFAULT 50,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
             [],
         )?;
+
+        // Migration: add explain_max_rows column to pre-existing settings rows.
+        let has_explain_col: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('user_settings') WHERE name='explain_max_rows'")
+            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i32>(0)))
+            .unwrap_or(0) > 0;
+        if !has_explain_col {
+            conn.execute("ALTER TABLE user_settings ADD COLUMN explain_max_rows INTEGER NOT NULL DEFAULT 50", []).ok();
+        }
 
         // LLM configuration table (single row)
         conn.execute(
@@ -644,12 +691,147 @@ impl AppDatabase {
         })
     }
 
+    // ============ Script operations ============
+
+    pub fn create_script(&self, script: &Script) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO scripts (id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                &script.id,
+                &script.name,
+                &script.description,
+                &script.engine,
+                &script.query_language,
+                &script.body,
+                &script.params_json,
+                &script.tags,
+                script.is_builtin as i32,
+                &script.created_at,
+                &script.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_scripts(&self) -> Result<Vec<Script>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at
+             FROM scripts ORDER BY is_builtin DESC, name ASC",
+        )?;
+        let scripts = stmt
+            .query_map([], |row| {
+                Ok(Script {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    engine: row.get(3)?,
+                    query_language: row.get(4)?,
+                    body: row.get(5)?,
+                    params_json: row.get(6)?,
+                    tags: row.get(7)?,
+                    is_builtin: row.get::<_, i32>(8)? == 1,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(scripts)
+    }
+
+    pub fn get_script(&self, id: &str) -> Result<Option<Script>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at
+                 FROM scripts WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(Script {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                        engine: row.get(3)?,
+                        query_language: row.get(4)?,
+                        body: row.get(5)?,
+                        params_json: row.get(6)?,
+                        tags: row.get(7)?,
+                        is_builtin: row.get::<_, i32>(8)? == 1,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(result)
+    }
+
+    /// Update a user script. Built-in scripts are read-only and are never matched here.
+    pub fn update_script(&self, script: &Script) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE scripts SET name = ?1, description = ?2, engine = ?3, query_language = ?4, body = ?5, params_json = ?6, tags = ?7, updated_at = ?8
+             WHERE id = ?9 AND is_builtin = 0",
+            rusqlite::params![
+                &script.name,
+                &script.description,
+                &script.engine,
+                &script.query_language,
+                &script.body,
+                &script.params_json,
+                &script.tags,
+                &script.updated_at,
+                &script.id,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Delete a user script. Built-in scripts cannot be deleted by the user.
+    pub fn delete_script(&self, id: &str) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM scripts WHERE id = ?1 AND is_builtin = 0", [id])?;
+        Ok(rows > 0)
+    }
+
+    /// Replace the bundled built-in library: delete all is_builtin rows then
+    /// reinsert the provided set. Called on every startup so updates to the
+    /// shipped JSON take effect. User scripts (is_builtin=0) are untouched.
+    pub fn reseed_builtin_scripts(&self, scripts: &[Script]) -> Result<(), AppDbError> {
+        let mut conn = self.conn.lock().unwrap();
+        // Atomic: a failed insert or a crash mid-seed leaves the prior set intact.
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM scripts WHERE is_builtin = 1", [])?;
+        for s in scripts {
+            tx.execute(
+                "INSERT INTO scripts (id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+                rusqlite::params![
+                    &s.id,
+                    &s.name,
+                    &s.description,
+                    &s.engine,
+                    &s.query_language,
+                    &s.body,
+                    &s.params_json,
+                    &s.tags,
+                    &s.created_at,
+                    &s.updated_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ============ User settings operations ============
 
     pub fn get_user_settings(&self) -> Result<Option<UserSettings>, AppDbError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT theme, default_page_size, query_timeout_seconds, auto_save_history, created_at, updated_at 
+            "SELECT theme, default_page_size, query_timeout_seconds, auto_save_history, explain_max_rows, created_at, updated_at
              FROM user_settings WHERE id = 'local'",
         )?;
 
@@ -660,8 +842,9 @@ impl AppDatabase {
                     default_page_size: row.get(1)?,
                     query_timeout_seconds: row.get(2)?,
                     auto_save_history: row.get::<_, i32>(3)? == 1,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    explain_max_rows: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
                 })
             })
             .ok();
@@ -672,19 +855,21 @@ impl AppDatabase {
     pub fn upsert_user_settings(&self, settings: &UserSettings) -> Result<(), AppDbError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO user_settings (id, theme, default_page_size, query_timeout_seconds, auto_save_history, created_at, updated_at) 
-             VALUES ('local', ?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET 
+            "INSERT INTO user_settings (id, theme, default_page_size, query_timeout_seconds, auto_save_history, explain_max_rows, created_at, updated_at)
+             VALUES ('local', ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
                 theme = excluded.theme,
                 default_page_size = excluded.default_page_size,
                 query_timeout_seconds = excluded.query_timeout_seconds,
                 auto_save_history = excluded.auto_save_history,
+                explain_max_rows = excluded.explain_max_rows,
                 updated_at = excluded.updated_at",
             rusqlite::params![
                 &settings.theme,
                 settings.default_page_size,
                 settings.query_timeout_seconds,
                 settings.auto_save_history as i32,
+                settings.explain_max_rows,
                 &settings.created_at,
                 &settings.updated_at,
             ],

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "List top-level keys",
+    "description": "Read the database root (shallow), revealing top-level children.",
+    "query_language": "firebase_rtdb",
+    "tags": "paths,overview",
+    "params": [],
+    "body": "/?shallow=true"
+  },
+  {
+    "name": "Read data under a path",
+    "description": "Return the contents of a given path in the database.",
+    "query_language": "firebase_rtdb",
+    "tags": "paths,read",
+    "params": [
+      { "name": "path", "label": "Path", "type": "string", "default": "users" }
+    ],
+    "body": "/{{path}}"
+  },
+  {
+    "name": "Count children under a path",
+    "description": "Shallow read of a path; each returned row is one child key under it.",
+    "query_language": "firebase_rtdb",
+    "tags": "paths,count",
+    "params": [
+      { "name": "path", "label": "Path", "type": "string", "default": "users" }
+    ],
+    "body": "/{{path}}?shallow=true"
+  }
+]

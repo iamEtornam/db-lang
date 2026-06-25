@@ -60,8 +60,18 @@ export interface UserSettings {
   default_page_size: number
   query_timeout_seconds: number
   auto_save_history: boolean
+  /** Max rows of a result set sent to the LLM when explaining results. */
+  explain_max_rows: number
   created_at: string
   updated_at: string
+}
+
+/** Structured AI interpretation of a query result set. */
+export interface ResultExplanation {
+  summary: string
+  key_findings: string[]
+  anomalies: string[]
+  suggested_followups: string[]
 }
 
 export interface LlmConfig {
@@ -123,6 +133,30 @@ export interface Chart {
   query: string
   chart_type: string
   config_json: string
+  created_at: string
+  updated_at: string
+}
+
+export type ScriptParamType = 'string' | 'number' | 'table-name' | 'column-name'
+
+export interface ScriptParam {
+  name: string
+  label?: string
+  type: ScriptParamType
+  default?: string
+}
+
+export interface Script {
+  id: string
+  name: string
+  description: string | null
+  engine: string
+  query_language: string
+  body: string
+  /** JSON-encoded ScriptParam[] */
+  params_json: string
+  tags: string
+  is_builtin: boolean
   created_at: string
   updated_at: string
 }

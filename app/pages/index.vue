@@ -8,7 +8,7 @@ import { Textarea } from '~/components/ui/textarea'
 import { Separator } from '~/components/ui/separator'
 import { useConnectionsStore } from '~/stores/connections'
 import { useHistoryStore } from '~/stores/history'
-import type { PaginatedResult } from '~/types/database'
+import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { QueryResult } from '~/types/query'
 
 useHead({ title: 'Query' })
@@ -46,17 +46,25 @@ interface ChartConfig {
 const chartConfig = ref<ChartConfig | null>(null)
 const isGeneratingChart = ref(false)
 
-// Insights state
-const dataInsight = ref('')
+// Insights state (structured result explanation)
+const resultExplanation = ref<ResultExplanation | null>(null)
 const isGeneratingInsight = ref(false)
+// Rows captured on the first explain call, kept in frontend state so that
+// chat-style follow-ups reuse the same sample instead of re-shipping/re-running.
+const insightSampleRows = ref<Record<string, unknown>[]>([])
+// Upper bound on rows handed to the backend; the backend then applies the
+// user's `explain_max_rows` setting and computes column stats over what it gets,
+// so this must be >= the max setting (1000) for stats to be representative.
+const INSIGHT_SAMPLE_LIMIT = 1000
 
 // Auto-generate chart/insight when tab is clicked if not yet generated
 watch(activeResultTab, async (tab) => {
-  if (!queryResult.value) return
+  // Skip auto-generation on empty result sets — nothing to chart or explain.
+  if (!queryResult.value || queryResult.value.rows.length === 0) return
   if (tab === 'chart' && !chartConfig.value && !isGeneratingChart.value) {
     await generateChart()
   }
-  if (tab === 'insights' && !dataInsight.value && !isGeneratingInsight.value) {
+  if (tab === 'insights' && !resultExplanation.value && !isGeneratingInsight.value) {
     await generateInsight()
   }
 })
@@ -64,7 +72,8 @@ watch(activeResultTab, async (tab) => {
 // Reset chart/insight when a new query runs
 watch(queryResult, () => {
   chartConfig.value = null
-  dataInsight.value = ''
+  resultExplanation.value = null
+  insightSampleRows.value = []
 })
 
 async function generateChart() {
@@ -87,22 +96,60 @@ async function generateChart() {
   }
 }
 
-async function generateInsight() {
-  if (!queryResult.value) return
+async function generateInsight(forceRefresh = false) {
+  if (!queryResult.value || queryResult.value.rows.length === 0 || !activeConnection.value) return
   isGeneratingInsight.value = true
+  // Capture the sample once; reused by follow-up questions so we never re-run
+  // the query or re-ship the full result set. The backend caps it further.
+  insightSampleRows.value = queryResult.value.rows.slice(0, INSIGHT_SAMPLE_LIMIT)
   try {
-    const text = await invoke<string>('explain_data', {
-      data: JSON.stringify(queryResult.value.rows.slice(0, 100)),
-      columns: queryResult.value.columns,
-      query: naturalQuery.value,
+    resultExplanation.value = await invoke<ResultExplanation>('explain_query_result', {
+      connectionId: activeConnection.value.id,
+      query: generatedQuery.value,
+      resultSummary: JSON.stringify(insightSampleRows.value),
+      question: null,
+      forceRefresh,
     })
-    dataInsight.value = text
   }
   catch (err) {
     toast.error('Could not generate insight', { description: err as string })
   }
   finally {
     isGeneratingInsight.value = false
+  }
+}
+
+// Chat-style follow-up: reuse the cached sample, do NOT re-run the query.
+async function askFollowup(question: string) {
+  if (!activeConnection.value || insightSampleRows.value.length === 0) return
+  isGeneratingInsight.value = true
+  try {
+    resultExplanation.value = await invoke<ResultExplanation>('explain_query_result', {
+      connectionId: activeConnection.value.id,
+      query: generatedQuery.value,
+      resultSummary: JSON.stringify(insightSampleRows.value),
+      question,
+    })
+  }
+  catch (err) {
+    toast.error('Could not answer follow-up', { description: err as string })
+  }
+  finally {
+    isGeneratingInsight.value = false
+  }
+}
+
+// One-click suggested follow-up: populate the natural-language query input.
+function useFollowup(followup: string) {
+  naturalQuery.value = followup
+  toast.info('Follow-up added to the query box — press Ask to run it')
+}
+
+// "Explain result" button next to the table: jump to Insights and generate.
+async function explainResultFromTable() {
+  activeResultTab.value = 'insights'
+  if (!resultExplanation.value && !isGeneratingInsight.value) {
+    await generateInsight()
   }
 }
 
@@ -443,6 +490,15 @@ function goToSettings() {
               <span>{{ queryResult.columns.length }} columns</span>
               <Separator orientation="vertical" class="h-4" />
               <Badge variant="outline" class="text-xs">{{ queryResult.execution_time_ms }}ms</Badge>
+              <Button
+                size="sm"
+                variant="ghost"
+                class="ml-auto h-7 px-2 text-xs gap-1.5"
+                @click="explainResultFromTable"
+              >
+                <Icon name="lucide:sparkles" class="size-3.5 text-primary" />
+                Explain result
+              </Button>
             </div>
 
             <div class="overflow-auto flex-1">
@@ -601,39 +657,17 @@ function goToSettings() {
           </div>
         </TabsContent>
 
-        <!-- Insights tab -->
-        <TabsContent value="insights" class="flex-1 overflow-auto mt-2">
-          <!-- Generating -->
-          <div v-if="isGeneratingInsight" class="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-            <Icon name="lucide:loader-2" class="size-8 animate-spin text-primary" />
-            <p class="text-sm">AI is reading your data...</p>
-          </div>
-
-          <!-- Insight ready -->
-          <div v-else-if="dataInsight" class="flex flex-col gap-3 p-2">
-            <div class="flex items-center justify-between">
-              <h3 class="text-sm font-medium flex items-center gap-2">
-                <Icon name="lucide:sparkles" class="size-4 text-primary" />
-                AI Analysis
-              </h3>
-              <Button size="sm" variant="ghost" @click="generateInsight">
-                <Icon name="lucide:refresh-cw" class="size-3.5" />
-                Refresh
-              </Button>
-            </div>
-            <div class="rounded-lg border border-border bg-muted/20 p-4">
-              <p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{{ dataInsight }}</p>
-            </div>
-          </div>
-
-          <!-- No insight yet -->
-          <div v-else class="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-            <Icon name="lucide:sparkles" class="size-8" />
-            <Button @click="generateInsight">
-              <Icon name="lucide:sparkles" class="size-4" />
-              Explain Data
-            </Button>
-          </div>
+        <!-- Insights tab (structured result explanation + follow-ups) -->
+        <TabsContent value="insights" class="flex-1 overflow-hidden mt-2">
+          <ResultInsights
+            :explanation="resultExplanation"
+            :is-loading="isGeneratingInsight"
+            :has-data="!!queryResult && queryResult.rows.length > 0"
+            @generate="generateInsight()"
+            @refresh="generateInsight(true)"
+            @ask="askFollowup"
+            @use-followup="useFollowup"
+          />
         </TabsContent>
 
         <!-- Watch tab (RTDB only) -->

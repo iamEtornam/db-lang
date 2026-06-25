@@ -23,6 +23,11 @@ export const navigationMenus: NavGroup[] = [
         href: '/history',
         icon: 'lucide:clock',
       },
+      {
+        title: 'Scripts',
+        href: '/scripts',
+        icon: 'lucide:scroll-text',
+      },
     ],
   },
 ]

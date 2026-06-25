@@ -6,6 +6,7 @@ mod drivers;
 mod export;
 mod gemini;
 mod schema_kb;
+mod scripts;
 
 use app_db::{init_app_database, get_app_database, DbConnectionRecord};
 use drivers::{create_driver, TableInfo, ColumnInfo, PaginatedResult};
@@ -151,6 +152,47 @@ async fn query_db(connection_id: &str, query: &str) -> Result<String, String> {
     let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     let rows = driver.execute_query(query).await.map_err(|e| e.to_string())?;
     serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
+/// Run a saved or built-in script against a connection. Params are a map of
+/// `{name -> value}` substituted into the body via `{{name}}` tokens. The
+/// resolved body is gated by the same destructive-keyword check used for
+/// AI-generated queries, then each statement is run read-only through the
+/// driver. Returns a JSON array of all rows produced.
+#[tauri::command]
+async fn run_script(
+    connection_id: &str,
+    script_id: &str,
+    params: std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    let script = db
+        .get_script(script_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Script '{}' not found", script_id))?;
+
+    let resolved = scripts::substitute_params(&script.body, &params);
+
+    // Same guard the LLM layer uses for AI-generated queries.
+    if gemini::contains_destructive_keywords(&resolved) {
+        return Err(format!(
+            "DestructiveQuery: this script contains destructive operations: {}",
+            resolved
+        ));
+    }
+
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let driver = create_driver(&engine, &conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let statements = scripts::split_statements(&resolved, &script.query_language);
+    let mut all_rows: Vec<serde_json::Value> = Vec::new();
+    for stmt in statements {
+        let rows = driver.execute_query(&stmt).await.map_err(|e| e.to_string())?;
+        all_rows.extend(rows);
+    }
+    serde_json::to_string(&all_rows).map_err(|e| e.to_string())
 }
 
 /// Insert one MongoDB document into a collection. Returns the inserted
@@ -998,6 +1040,83 @@ async fn explain_data(
         .map_err(|e| e.to_string())
 }
 
+/// Roughly 8 KB JSON cap on the downsampled sample shipped to the LLM. Paired
+/// with the user-configurable `explain_max_rows`; whichever bites first wins.
+const EXPLAIN_MAX_BYTES: usize = 8 * 1024;
+
+/// Interpret a result set with schema-KB + query context and return a
+/// structured explanation. `result_summary` is a JSON array of result rows (the
+/// frontend's downsampled view); it is re-downsampled on the Rust side. An
+/// optional `question` enables follow-ups without re-running the query.
+#[tauri::command]
+async fn explain_query_result(
+    connection_id: &str,
+    query: &str,
+    result_summary: &str,
+    question: Option<String>,
+    force_refresh: Option<bool>,
+) -> Result<gemini::ResultExplanation, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+
+    // The result rows arrive as a JSON array string from the frontend.
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(result_summary).map_err(|e| format!("Invalid result_summary JSON: {e}"))?;
+
+    // Identify the engine's query language without opening a DB connection.
+    let query_language = drivers::query_language_for_engine(&engine).to_string();
+
+    // Schema KB context for the referenced tables/collections, if generated.
+    let schema_context = match schema_kb::get_schema_kb(connection_id) {
+        Ok(Some(kb)) => schema_kb::build_schema_context(&kb),
+        _ => String::new(),
+    };
+
+    // Configurable row cap (defaults to 50; clamped on write).
+    let max_rows = get_app_database()
+        .ok()
+        .and_then(|db| db.get_user_settings().ok().flatten())
+        .map(|s| s.explain_max_rows.max(1) as usize)
+        .unwrap_or(commands::DEFAULT_EXPLAIN_MAX_ROWS as usize);
+
+    // Reuse the in-process cache so identical (query, result, question) triples
+    // don't re-bill the LLM. Key shape mirrors the query cache (conn_str + key).
+    let cache = connection_pool::get_cache();
+    let cache_payload = format!(
+        "explain_result\x1f{}\x1f{}\x1f{}",
+        query,
+        result_summary,
+        question.as_deref().unwrap_or("")
+    );
+    // The "Refresh" button passes force_refresh=true to skip the cache and
+    // re-bill the LLM; otherwise an identical triple returns the cached result.
+    if !force_refresh.unwrap_or(false) {
+        if let Some(hit) = cache.get(&conn_str, &cache_payload) {
+            if let Ok(parsed) = serde_json::from_str::<gemini::ResultExplanation>(&hit) {
+                return Ok(parsed);
+            }
+        }
+    }
+
+    let explanation = gemini::explain_query_result(
+        query,
+        &engine,
+        &query_language,
+        &schema_context,
+        &rows,
+        question.as_deref(),
+        max_rows,
+        EXPLAIN_MAX_BYTES,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Ok(serialized) = serde_json::to_string(&explanation) {
+        cache.set(&conn_str, &cache_payload, serialized);
+    }
+
+    Ok(explanation)
+}
+
 // ============ Schema Knowledge Base Commands ============
 
 #[tauri::command]
@@ -1109,6 +1228,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // Reseed the built-in script library from bundled resources on every
+            // launch so shipped updates take effect. User scripts are untouched.
+            use tauri::Manager;
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let builtins = scripts::load_builtin_scripts(&resource_dir);
+                if let Ok(db) = get_app_database() {
+                    if let Err(e) = db.reseed_builtin_scripts(&builtins) {
+                        eprintln!("Failed to seed built-in scripts: {}", e);
+                    }
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Database operations
             query_db,
@@ -1158,6 +1291,7 @@ pub fn run() {
             // AI chart & data
             generate_chart_config,
             explain_data,
+            explain_query_result,
             // Custom charts (issue #10)
             run_chart,
             commands::list_charts,
@@ -1184,6 +1318,12 @@ pub fn run() {
             commands::get_snippets,
             commands::update_snippet,
             commands::delete_snippet,
+            // Scripts
+            commands::get_scripts,
+            commands::create_script,
+            commands::update_script,
+            commands::delete_script,
+            run_script,
             // Settings
             commands::get_settings,
             commands::update_settings,

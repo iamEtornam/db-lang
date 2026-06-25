@@ -1,5 +1,6 @@
 use crate::app_db::{
-    get_app_database, Chart, DbConnectionRecord, LlmConfig, QueryHistory, Snippet, UserSettings,
+    get_app_database, Chart, DbConnectionRecord, LlmConfig, QueryHistory, Script, Snippet,
+    UserSettings,
 };
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -331,7 +332,92 @@ pub async fn delete_chart(chart_id: String) -> Result<bool, String> {
     db.delete_chart(&chart_id).map_err(|e| e.to_string())
 }
 
+// ============ Script Commands ============
+
+#[derive(Debug, Deserialize)]
+pub struct CreateScriptRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    pub params_json: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateScriptRequest {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    pub params_json: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[command]
+pub async fn get_scripts() -> Result<Vec<Script>, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.get_scripts().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn create_script(script: CreateScriptRequest) -> Result<Script, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = Script {
+        id: Uuid::new_v4().to_string(),
+        name: script.name,
+        description: script.description,
+        engine: script.engine,
+        query_language: script.query_language,
+        body: script.body,
+        params_json: script.params_json.unwrap_or_else(|| "[]".to_string()),
+        tags: script.tags.unwrap_or_default(),
+        is_builtin: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    db.create_script(&record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+#[command]
+pub async fn update_script(script: UpdateScriptRequest) -> Result<bool, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = Script {
+        id: script.id,
+        name: script.name,
+        description: script.description,
+        engine: script.engine,
+        query_language: script.query_language,
+        body: script.body,
+        params_json: script.params_json.unwrap_or_else(|| "[]".to_string()),
+        tags: script.tags.unwrap_or_default(),
+        is_builtin: false,
+        created_at: String::new(),
+        updated_at: now,
+    };
+
+    db.update_script(&record).map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn delete_script(script_id: String) -> Result<bool, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.delete_script(&script_id).map_err(|e| e.to_string())
+}
+
 // ============ Settings Commands ============
+
+/// Default cap on rows sent to the LLM when explaining a result set.
+pub const DEFAULT_EXPLAIN_MAX_ROWS: i32 = 50;
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsRequest {
@@ -339,6 +425,7 @@ pub struct UpdateSettingsRequest {
     pub default_page_size: Option<i32>,
     pub query_timeout_seconds: Option<i32>,
     pub auto_save_history: Option<bool>,
+    pub explain_max_rows: Option<i32>,
 }
 
 #[command]
@@ -356,6 +443,7 @@ pub async fn get_settings() -> Result<UserSettings, String> {
             default_page_size: 50,
             query_timeout_seconds: 30,
             auto_save_history: true,
+            explain_max_rows: DEFAULT_EXPLAIN_MAX_ROWS,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -383,6 +471,9 @@ pub async fn update_settings(settings: UpdateSettingsRequest) -> Result<UserSett
             if let Some(auto_save) = settings.auto_save_history {
                 s.auto_save_history = auto_save;
             }
+            if let Some(max_rows) = settings.explain_max_rows {
+                s.explain_max_rows = max_rows.clamp(1, 1000);
+            }
             s.updated_at = now;
             s
         }
@@ -391,6 +482,10 @@ pub async fn update_settings(settings: UpdateSettingsRequest) -> Result<UserSett
             default_page_size: settings.default_page_size.unwrap_or(50),
             query_timeout_seconds: settings.query_timeout_seconds.unwrap_or(30),
             auto_save_history: settings.auto_save_history.unwrap_or(true),
+            explain_max_rows: settings
+                .explain_max_rows
+                .unwrap_or(DEFAULT_EXPLAIN_MAX_ROWS)
+                .clamp(1, 1000),
             created_at: now.clone(),
             updated_at: now,
         },
