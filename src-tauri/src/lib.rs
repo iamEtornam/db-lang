@@ -945,6 +945,34 @@ async fn translate_to_query(
         .map_err(|e| e.to_string())
 }
 
+// ============ Custom Chart Commands (issue #10) ============
+
+/// Re-run a saved chart's stored query against its connection and return the
+/// rows as a JSON-encoded array (same `Vec<serde_json::Value>` shape the table
+/// view consumes). Errors if the chart has no connection or it was deleted.
+#[tauri::command]
+async fn run_chart(chart_id: &str) -> Result<String, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    let chart = db
+        .get_chart(chart_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Chart '{}' not found", chart_id))?;
+
+    let connection_id = chart
+        .connection_id
+        .ok_or_else(|| "This chart has no connection; pick one to re-run it".to_string())?;
+
+    let (engine, conn_str) = resolve_connection(&connection_id)?;
+    let driver = create_driver(&engine, &conn_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rows = driver
+        .execute_query(&chart.query)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
 // ============ AI Data Commands ============
 
 #[tauri::command]
@@ -1130,6 +1158,12 @@ pub fn run() {
             // AI chart & data
             generate_chart_config,
             explain_data,
+            // Custom charts (issue #10)
+            run_chart,
+            commands::list_charts,
+            commands::get_chart,
+            commands::save_chart,
+            commands::delete_chart,
             // Schema Knowledge Base
             generate_schema_kb,
             get_schema_kb,

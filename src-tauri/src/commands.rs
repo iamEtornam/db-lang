@@ -1,5 +1,5 @@
 use crate::app_db::{
-    get_app_database, DbConnectionRecord, LlmConfig, QueryHistory, Snippet, UserSettings,
+    get_app_database, Chart, DbConnectionRecord, LlmConfig, QueryHistory, Snippet, UserSettings,
 };
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -244,6 +244,88 @@ pub async fn delete_snippet(snippet_id: String) -> Result<bool, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
     db.delete_snippet(&snippet_id)
         .map_err(|e| e.to_string())
+}
+
+// ============ Chart Commands (issue #10) ============
+
+#[derive(Debug, Deserialize)]
+pub struct SaveChartRequest {
+    /// When present, updates an existing chart; otherwise a new one is created.
+    pub id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub connection_id: Option<String>,
+    pub engine: String,
+    pub query: String,
+    pub chart_type: String,
+    pub config_json: String,
+}
+
+#[command]
+pub async fn list_charts() -> Result<Vec<Chart>, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.get_charts().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_chart(chart_id: String) -> Result<Option<Chart>, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.get_chart(&chart_id).map_err(|e| e.to_string())
+}
+
+/// Upsert a chart. New charts get a generated id; existing charts keep their id
+/// and created_at. Returns the persisted record.
+#[command]
+pub async fn save_chart(chart: SaveChartRequest) -> Result<Chart, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    match chart.id {
+        Some(id) => {
+            // Preserve original created_at if the record still exists.
+            let created_at = db
+                .get_chart(&id)
+                .map_err(|e| e.to_string())?
+                .map(|c| c.created_at)
+                .unwrap_or_else(|| now.clone());
+            let record = Chart {
+                id,
+                name: chart.name,
+                description: chart.description,
+                connection_id: chart.connection_id,
+                engine: chart.engine,
+                query: chart.query,
+                chart_type: chart.chart_type,
+                config_json: chart.config_json,
+                created_at,
+                updated_at: now,
+            };
+            db.update_chart(&record).map_err(|e| e.to_string())?;
+            Ok(record)
+        }
+        None => {
+            let record = Chart {
+                id: Uuid::new_v4().to_string(),
+                name: chart.name,
+                description: chart.description,
+                connection_id: chart.connection_id,
+                engine: chart.engine,
+                query: chart.query,
+                chart_type: chart.chart_type,
+                config_json: chart.config_json,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            db.create_chart(&record).map_err(|e| e.to_string())?;
+            Ok(record)
+        }
+    }
+}
+
+#[command]
+pub async fn delete_chart(chart_id: String) -> Result<bool, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.delete_chart(&chart_id).map_err(|e| e.to_string())
 }
 
 // ============ Settings Commands ============

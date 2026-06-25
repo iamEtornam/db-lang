@@ -70,6 +70,21 @@ pub struct Snippet {
     pub updated_at: String,
 }
 
+/// Custom chart model (issue #10: persisted custom charts)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chart {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub connection_id: Option<String>,
+    pub engine: String,
+    pub query: String,
+    pub chart_type: String,
+    pub config_json: String, // JSON: axis/series/transform mapping
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// User settings model (no auth - single local user)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
@@ -175,6 +190,24 @@ impl AppDatabase {
                 natural_query TEXT NOT NULL,
                 sql_query TEXT NOT NULL,
                 tags TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Custom charts table (issue #10) — connection_id is nullable so a
+        // chart can outlive a deleted connection (re-render is disabled then).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS charts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                connection_id TEXT,
+                engine TEXT NOT NULL DEFAULT '',
+                query TEXT NOT NULL,
+                chart_type TEXT NOT NULL DEFAULT 'bar',
+                config_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -520,6 +553,95 @@ impl AppDatabase {
             [id],
         )?;
         Ok(rows_affected > 0)
+    }
+
+    // ============ Chart operations (issue #10) ============
+
+    pub fn create_chart(&self, chart: &Chart) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO charts (id, name, description, connection_id, engine, query, chart_type, config_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                &chart.id,
+                &chart.name,
+                &chart.description,
+                &chart.connection_id,
+                &chart.engine,
+                &chart.query,
+                &chart.chart_type,
+                &chart.config_json,
+                &chart.created_at,
+                &chart.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_charts(&self) -> Result<Vec<Chart>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, connection_id, engine, query, chart_type, config_json, created_at, updated_at
+             FROM charts ORDER BY updated_at DESC",
+        )?;
+        let charts = stmt
+            .query_map([], Self::map_chart_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(charts)
+    }
+
+    pub fn get_chart(&self, id: &str) -> Result<Option<Chart>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let chart = conn
+            .query_row(
+                "SELECT id, name, description, connection_id, engine, query, chart_type, config_json, created_at, updated_at
+                 FROM charts WHERE id = ?1",
+                [id],
+                Self::map_chart_row,
+            )
+            .ok();
+        Ok(chart)
+    }
+
+    pub fn update_chart(&self, chart: &Chart) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE charts SET name = ?1, description = ?2, connection_id = ?3, engine = ?4, query = ?5, chart_type = ?6, config_json = ?7, updated_at = ?8
+             WHERE id = ?9",
+            rusqlite::params![
+                &chart.name,
+                &chart.description,
+                &chart.connection_id,
+                &chart.engine,
+                &chart.query,
+                &chart.chart_type,
+                &chart.config_json,
+                &chart.updated_at,
+                &chart.id,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn delete_chart(&self, id: &str) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM charts WHERE id = ?1", [id])?;
+        Ok(rows > 0)
+    }
+
+    fn map_chart_row(row: &rusqlite::Row) -> SqliteResult<Chart> {
+        Ok(Chart {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            connection_id: row.get(3)?,
+            engine: row.get(4)?,
+            query: row.get(5)?,
+            chart_type: row.get(6)?,
+            config_json: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
     }
 
     // ============ User settings operations ============
