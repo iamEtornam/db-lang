@@ -106,6 +106,37 @@ export interface Snippet {
   updated_at: string
 }
 
+// Custom charts (issue #10) — persisted chart definitions.
+export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'kpi' | 'table'
+
+export type AggregateFn = 'none' | 'sum' | 'avg' | 'count' | 'min' | 'max'
+
+/** Stored in Chart.config_json. Describes how to map rows -> a chart. */
+export interface ChartDefinition {
+  chartType: ChartType
+  /** Category / x-axis field (group key). */
+  categoryField: string
+  /** Value / y-axis field. Ignored when aggregate === 'count'. */
+  valueField: string
+  /** Aggregation applied per category. 'none' plots rows as-is. */
+  aggregate: AggregateFn
+  /** Keep only the top N categories by value after aggregation. 0 = all. */
+  topN: number
+}
+
+export interface Chart {
+  id: string
+  name: string
+  description: string | null
+  connection_id: string | null
+  engine: string
+  query: string
+  chart_type: string
+  config_json: string
+  created_at: string
+  updated_at: string
+}
+
 export type ScriptParamType = 'string' | 'number' | 'table-name' | 'column-name'
 
 export interface ScriptParam {
