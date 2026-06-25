@@ -96,6 +96,30 @@ export interface Snippet {
   updated_at: string
 }
 
+export type ScriptParamType = 'string' | 'number' | 'table-name' | 'column-name'
+
+export interface ScriptParam {
+  name: string
+  label?: string
+  type: ScriptParamType
+  default?: string
+}
+
+export interface Script {
+  id: string
+  name: string
+  description: string | null
+  engine: string
+  query_language: string
+  body: string
+  /** JSON-encoded ScriptParam[] */
+  params_json: string
+  tags: string
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
 // Schema Knowledge Base types
 export interface SchemaSnapshot {
   id: string
