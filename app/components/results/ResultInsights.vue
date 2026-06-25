@@ -12,6 +12,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** Generate the first explanation (no follow-up question). */
   generate: []
+  /** Re-generate, bypassing the cache (Refresh button). */
+  refresh: []
   /** Ask a follow-up question about the existing result. */
   ask: [question: string]
   /** Populate the query input from a suggested follow-up. */
@@ -76,7 +78,7 @@ function onQuestionKeydown(e: KeyboardEvent) {
           <Icon name="lucide:sparkles" class="size-4 text-primary" />
           AI Analysis
         </h3>
-        <Button size="sm" variant="ghost" :disabled="isLoading" @click="emit('generate')">
+        <Button size="sm" variant="ghost" :disabled="isLoading" @click="emit('refresh')">
           <Icon name="lucide:refresh-cw" class="size-3.5" />
           Refresh
         </Button>

@@ -1076,19 +1076,23 @@ pub fn downsample_result(
     }
 
     // Build the row sample, capped by both row count and serialized byte size.
+    // The byte cap applies to the first row too: a single oversized row (e.g. a
+    // huge base64 blob) must not bypass the budget and blow the token limit.
     let mut sample: Vec<&serde_json::Value> = Vec::new();
     let mut bytes = 2usize; // account for the surrounding "[]"
     for row in rows.iter().take(max_rows.max(1)) {
         let serialized = serde_json::to_string(row).unwrap_or_default();
-        // +1 for the joining comma between elements.
-        if !sample.is_empty() && bytes + serialized.len() + 1 > max_bytes {
+        // First element has no joining comma; subsequent ones add one.
+        let additional = if sample.is_empty() {
+            serialized.len()
+        } else {
+            serialized.len() + 1
+        };
+        if bytes + additional > max_bytes {
             break;
         }
-        bytes += serialized.len() + 1;
+        bytes += additional;
         sample.push(row);
-        if bytes >= max_bytes {
-            break;
-        }
     }
 
     let sample_json = serde_json::to_string(&sample).unwrap_or_else(|_| "[]".to_string());
@@ -1199,10 +1203,15 @@ Rules:
     match serde_json::from_str::<ResultExplanation>(cleaned) {
         Ok(parsed) => Ok(parsed),
         Err(_) => {
-            // Fallback: surface the raw text as the summary so the user still
-            // gets something rather than an opaque parse error.
+            // Fallback: surface the full raw text as the summary so the user
+            // still gets the whole explanation rather than just its first line.
+            let summary = if response.trim().is_empty() {
+                "Result analysis".to_string()
+            } else {
+                response.trim().to_string()
+            };
             Ok(ResultExplanation {
-                summary: response.lines().next().unwrap_or("Result analysis").to_string(),
+                summary,
                 key_findings: vec![],
                 anomalies: vec![],
                 suggested_followups: vec![],
@@ -1369,6 +1378,21 @@ mod tests {
             down.sample_json.len() <= 1024 + 600,
             "sample stays roughly within the byte budget"
         );
+    }
+
+    #[test]
+    fn downsample_oversized_first_row_respects_byte_cap() {
+        // A single row larger than the byte budget must not be force-included;
+        // column stats still cover the full result.
+        let huge = "x".repeat(20_000);
+        let rows = vec![
+            serde_json::json!({ "blob": huge }),
+            serde_json::json!({ "blob": "small" }),
+        ];
+        let down = downsample_result(&rows, 10, 8192);
+        assert_eq!(down.row_count, 2, "stats still see every row");
+        assert_eq!(down.sampled_rows, 0, "oversized first row is not shipped");
+        assert!(down.sample_json.len() <= 8192);
     }
 
     #[test]
