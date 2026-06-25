@@ -666,10 +666,12 @@ impl AppDatabase {
     /// reinsert the provided set. Called on every startup so updates to the
     /// shipped JSON take effect. User scripts (is_builtin=0) are untouched.
     pub fn reseed_builtin_scripts(&self, scripts: &[Script]) -> Result<(), AppDbError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM scripts WHERE is_builtin = 1", [])?;
+        let mut conn = self.conn.lock().unwrap();
+        // Atomic: a failed insert or a crash mid-seed leaves the prior set intact.
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM scripts WHERE is_builtin = 1", [])?;
         for s in scripts {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO scripts (id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
                 rusqlite::params![
@@ -686,6 +688,7 @@ impl AppDatabase {
                 ],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 

@@ -35,27 +35,25 @@ const BUILTIN_ENGINES: [&str; 7] = [
 /// query error). Whitespace inside the braces is tolerated: `{{ name }}`.
 pub fn substitute_params(body: &str, params: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(body.len());
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            if let Some(end) = body[i + 2..].find("}}") {
-                let raw = &body[i + 2..i + 2 + end];
-                let key = raw.trim();
-                if let Some(val) = params.get(key) {
-                    out.push_str(val);
-                    i = i + 2 + end + 2;
-                    continue;
+    let mut rest = body;
+    // `find` only returns offsets on char boundaries, so every slice below is
+    // UTF-8 safe — non-ASCII bodies pass through unchanged.
+    while let Some(start) = rest.find("{{") {
+        match rest[start + 2..].find("}}") {
+            Some(end) => {
+                out.push_str(&rest[..start]);
+                let key = rest[start + 2..start + 2 + end].trim();
+                match params.get(key) {
+                    Some(val) => out.push_str(val),
+                    // Unknown placeholder: keep it verbatim.
+                    None => out.push_str(&rest[start..start + 2 + end + 2]),
                 }
-                // Unknown placeholder: keep it verbatim.
-                out.push_str(&body[i..i + 2 + end + 2]);
-                i = i + 2 + end + 2;
-                continue;
+                rest = &rest[start + 2 + end + 2..];
             }
+            None => break,
         }
-        out.push(bytes[i] as char);
-        i += 1;
     }
+    out.push_str(rest);
     out
 }
 
@@ -65,11 +63,63 @@ pub fn substitute_params(body: &str, params: &HashMap<String, String>) -> String
 /// never broken apart.
 pub fn split_statements(body: &str, query_language: &str) -> Vec<String> {
     match query_language.to_lowercase().as_str() {
-        "sql" => body
-            .split(';')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
+        // ponytail: state machine handles ';' inside single/double quotes and
+        // `--` line comments. Does NOT handle Postgres $$ dollar-quoting or
+        // /* */ block comments — add those arms if a builtin/user script needs them.
+        "sql" => {
+            let mut statements = Vec::new();
+            let mut current = String::new();
+            let mut in_single = false;
+            let mut in_double = false;
+            let mut in_comment = false;
+            let mut chars = body.chars().peekable();
+            while let Some(c) = chars.next() {
+                if in_comment {
+                    current.push(c);
+                    if c == '\n' {
+                        in_comment = false;
+                    }
+                } else if in_single {
+                    current.push(c);
+                    if c == '\'' {
+                        // '' is an escaped quote, stay inside the literal.
+                        if chars.peek() == Some(&'\'') {
+                            current.push(chars.next().unwrap());
+                        } else {
+                            in_single = false;
+                        }
+                    }
+                } else if in_double {
+                    current.push(c);
+                    if c == '"' {
+                        in_double = false;
+                    }
+                } else if c == '-' && chars.peek() == Some(&'-') {
+                    in_comment = true;
+                    current.push(c);
+                    current.push(chars.next().unwrap());
+                } else if c == '\'' {
+                    in_single = true;
+                    current.push(c);
+                } else if c == '"' {
+                    in_double = true;
+                    current.push(c);
+                } else if c == ';' {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        statements.push(trimmed.to_string());
+                    }
+                    current.clear();
+                } else {
+                    current.push(c);
+                }
+            }
+            let trimmed = current.trim();
+            if !trimmed.is_empty() {
+                statements.push(trimmed.to_string());
+            }
+            statements
+        }
         "redis" => body
             .lines()
             .map(|s| s.trim().to_string())
@@ -148,6 +198,27 @@ mod tests {
     fn splits_sql_on_semicolons() {
         let stmts = split_statements("TYPE k;\n TTL k ;", "sql");
         assert_eq!(stmts, vec!["TYPE k", "TTL k"]);
+    }
+
+    #[test]
+    fn split_ignores_semicolons_in_quotes_and_comments() {
+        // The `;` inside the string literal and inside the `--` comment must not
+        // split; only the two real statement terminators do.
+        let body = "INSERT INTO logs VALUES ('a; b'); -- c ; c\nSELECT 1;";
+        let stmts = split_statements(body, "sql");
+        assert_eq!(
+            stmts,
+            vec!["INSERT INTO logs VALUES ('a; b')", "-- c ; c\nSELECT 1"]
+        );
+    }
+
+    #[test]
+    fn substitute_is_utf8_safe() {
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), "Zoë".to_string());
+        // Non-ASCII before, inside the value, and after the placeholder.
+        let out = substitute_params("café {{ name }} 日本", &params);
+        assert_eq!(out, "café Zoë 日本");
     }
 
     #[test]

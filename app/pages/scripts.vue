@@ -229,7 +229,7 @@ function openInWorkspace(script: Script) {
               <tbody>
                 <tr v-for="(row, i) in runResults" :key="i" class="border-t border-border">
                   <td v-for="col in resultColumns" :key="col" class="px-2 py-1 font-mono">
-                    {{ (row as Record<string, unknown>)[col] }}
+                    {{ (row && typeof row === 'object') ? (row as Record<string, unknown>)[col] : '' }}
                   </td>
                 </tr>
               </tbody>
