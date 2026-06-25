@@ -330,12 +330,16 @@ pub async fn delete_script(script_id: String) -> Result<bool, String> {
 
 // ============ Settings Commands ============
 
+/// Default cap on rows sent to the LLM when explaining a result set.
+pub const DEFAULT_EXPLAIN_MAX_ROWS: i32 = 50;
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsRequest {
     pub theme: Option<String>,
     pub default_page_size: Option<i32>,
     pub query_timeout_seconds: Option<i32>,
     pub auto_save_history: Option<bool>,
+    pub explain_max_rows: Option<i32>,
 }
 
 #[command]
@@ -353,6 +357,7 @@ pub async fn get_settings() -> Result<UserSettings, String> {
             default_page_size: 50,
             query_timeout_seconds: 30,
             auto_save_history: true,
+            explain_max_rows: DEFAULT_EXPLAIN_MAX_ROWS,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -380,6 +385,9 @@ pub async fn update_settings(settings: UpdateSettingsRequest) -> Result<UserSett
             if let Some(auto_save) = settings.auto_save_history {
                 s.auto_save_history = auto_save;
             }
+            if let Some(max_rows) = settings.explain_max_rows {
+                s.explain_max_rows = max_rows.clamp(1, 1000);
+            }
             s.updated_at = now;
             s
         }
@@ -388,6 +396,10 @@ pub async fn update_settings(settings: UpdateSettingsRequest) -> Result<UserSett
             default_page_size: settings.default_page_size.unwrap_or(50),
             query_timeout_seconds: settings.query_timeout_seconds.unwrap_or(30),
             auto_save_history: settings.auto_save_history.unwrap_or(true),
+            explain_max_rows: settings
+                .explain_max_rows
+                .unwrap_or(DEFAULT_EXPLAIN_MAX_ROWS)
+                .clamp(1, 1000),
             created_at: now.clone(),
             updated_at: now,
         },

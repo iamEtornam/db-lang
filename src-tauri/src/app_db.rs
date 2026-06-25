@@ -94,6 +94,8 @@ pub struct UserSettings {
     pub default_page_size: i32,
     pub query_timeout_seconds: i32,
     pub auto_save_history: bool,
+    /// Max rows of a result set sent to the LLM when explaining results.
+    pub explain_max_rows: i32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -224,11 +226,21 @@ impl AppDatabase {
                 default_page_size INTEGER NOT NULL DEFAULT 50,
                 query_timeout_seconds INTEGER NOT NULL DEFAULT 30,
                 auto_save_history INTEGER NOT NULL DEFAULT 1,
+                explain_max_rows INTEGER NOT NULL DEFAULT 50,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
             [],
         )?;
+
+        // Migration: add explain_max_rows column to pre-existing settings rows.
+        let has_explain_col: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('user_settings') WHERE name='explain_max_rows'")
+            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i32>(0)))
+            .unwrap_or(0) > 0;
+        if !has_explain_col {
+            conn.execute("ALTER TABLE user_settings ADD COLUMN explain_max_rows INTEGER NOT NULL DEFAULT 50", []).ok();
+        }
 
         // LLM configuration table (single row)
         conn.execute(
@@ -697,7 +709,7 @@ impl AppDatabase {
     pub fn get_user_settings(&self) -> Result<Option<UserSettings>, AppDbError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT theme, default_page_size, query_timeout_seconds, auto_save_history, created_at, updated_at 
+            "SELECT theme, default_page_size, query_timeout_seconds, auto_save_history, explain_max_rows, created_at, updated_at
              FROM user_settings WHERE id = 'local'",
         )?;
 
@@ -708,8 +720,9 @@ impl AppDatabase {
                     default_page_size: row.get(1)?,
                     query_timeout_seconds: row.get(2)?,
                     auto_save_history: row.get::<_, i32>(3)? == 1,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    explain_max_rows: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
                 })
             })
             .ok();
@@ -720,19 +733,21 @@ impl AppDatabase {
     pub fn upsert_user_settings(&self, settings: &UserSettings) -> Result<(), AppDbError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO user_settings (id, theme, default_page_size, query_timeout_seconds, auto_save_history, created_at, updated_at) 
-             VALUES ('local', ?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET 
+            "INSERT INTO user_settings (id, theme, default_page_size, query_timeout_seconds, auto_save_history, explain_max_rows, created_at, updated_at)
+             VALUES ('local', ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
                 theme = excluded.theme,
                 default_page_size = excluded.default_page_size,
                 query_timeout_seconds = excluded.query_timeout_seconds,
                 auto_save_history = excluded.auto_save_history,
+                explain_max_rows = excluded.explain_max_rows,
                 updated_at = excluded.updated_at",
             rusqlite::params![
                 &settings.theme,
                 settings.default_page_size,
                 settings.query_timeout_seconds,
                 settings.auto_save_history as i32,
+                settings.explain_max_rows,
                 &settings.created_at,
                 &settings.updated_at,
             ],

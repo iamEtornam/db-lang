@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'vue-sonner'
-import type { PaginatedResult } from '~/types/database'
+import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { ChartConfig, QueryExplanation, QueryResult, TranslationResult } from '~/types/query'
 
 export function useQuery() {
@@ -206,6 +206,32 @@ export function useQuery() {
     }
   }
 
+  /**
+   * Ask the backend to interpret a result set, returning structured sections.
+   * Pass `question` for chat-style follow-ups; the backend re-uses the cached
+   * downsampled summary so follow-ups don't re-run or re-ship the full result.
+   */
+  async function explainResult(
+    connectionId: string,
+    query: string,
+    rows: Record<string, unknown>[],
+    question?: string,
+  ): Promise<ResultExplanation | null> {
+    try {
+      const result = await invoke<ResultExplanation>('explain_query_result', {
+        connectionId,
+        query,
+        resultSummary: JSON.stringify(rows),
+        question: question ?? null,
+      })
+      return result
+    }
+    catch (err) {
+      toast.error('Result explanation failed', { description: err as string })
+      return null
+    }
+  }
+
   function reset() {
     naturalQuery.value = ''
     generatedQuery.value = ''
@@ -240,6 +266,7 @@ export function useQuery() {
     explainQuery,
     generateChart,
     explainData,
+    explainResult,
     reset,
   }
 }
