@@ -951,6 +951,266 @@ Keep it to 3-5 sentences. Do not include technical jargon or SQL. Write for a no
     call_llm_api(&prompt).await
 }
 
+// ============ Result explanation (structured) ============
+
+/// Structured AI interpretation of a query result set.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResultExplanation {
+    pub summary: String,
+    #[serde(default)]
+    pub key_findings: Vec<String>,
+    #[serde(default)]
+    pub anomalies: Vec<String>,
+    #[serde(default)]
+    pub suggested_followups: Vec<String>,
+}
+
+/// A compact, model-friendly summary of one column derived on the Rust side so
+/// we never ship every raw value to the LLM for wide results.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct ColumnSummary {
+    pub name: String,
+    /// Loose JSON kind: "number" | "string" | "bool" | "null" | "mixed"
+    pub kind: String,
+    pub non_null_count: usize,
+    pub null_count: usize,
+    pub distinct_count: usize,
+    /// Numeric stats, only populated when the column has numeric values.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// A downsampled view of a result set: a row sample plus per-column stats and a
+/// total row count. Built on the Rust side and sized by `max_rows` / `max_bytes`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResultDownsample {
+    pub row_count: usize,
+    pub sampled_rows: usize,
+    pub columns: Vec<ColumnSummary>,
+    /// JSON array (string) of the first N rows, capped to `max_bytes`.
+    pub sample_json: String,
+}
+
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        // Nested arrays/objects are treated as opaque string-ish values.
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => "string",
+    }
+}
+
+/// Build a downsampled, model-safe view of a result set.
+///
+/// `rows` is the full result; `max_rows` caps the row sample sent to the model
+/// and `max_bytes` caps the serialized sample size (whichever is hit first).
+/// Per-column min/max/distinct are computed over the FULL result so stats stay
+/// accurate even though only a sample of rows is shipped to the LLM.
+pub fn downsample_result(
+    rows: &[serde_json::Value],
+    max_rows: usize,
+    max_bytes: usize,
+) -> ResultDownsample {
+    let row_count = rows.len();
+
+    // Collect column names in first-seen order across all rows.
+    let mut col_names: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in rows {
+        if let Some(obj) = row.as_object() {
+            for k in obj.keys() {
+                if seen.insert(k.clone()) {
+                    col_names.push(k.clone());
+                }
+            }
+        }
+    }
+
+    let mut columns: Vec<ColumnSummary> = Vec::with_capacity(col_names.len());
+    for name in &col_names {
+        let mut non_null = 0usize;
+        let mut nulls = 0usize;
+        let mut distinct: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut min: Option<f64> = None;
+        let mut max: Option<f64> = None;
+        let mut kinds: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+
+        for row in rows {
+            let v = row.get(name).unwrap_or(&serde_json::Value::Null);
+            match v {
+                serde_json::Value::Null => nulls += 1,
+                other => {
+                    non_null += 1;
+                    kinds.insert(json_kind(other));
+                    if let Some(n) = other.as_f64() {
+                        min = Some(min.map_or(n, |m| m.min(n)));
+                        max = Some(max.map_or(n, |m| m.max(n)));
+                    }
+                    // Bound distinct tracking so a huge result can't blow memory.
+                    if distinct.len() < 10_000 {
+                        distinct.insert(other.to_string());
+                    }
+                }
+            }
+        }
+
+        let kind = if non_null == 0 {
+            "null".to_string()
+        } else if kinds.len() == 1 {
+            kinds.iter().next().unwrap().to_string()
+        } else {
+            "mixed".to_string()
+        };
+
+        columns.push(ColumnSummary {
+            name: name.clone(),
+            kind,
+            non_null_count: non_null,
+            null_count: nulls,
+            distinct_count: distinct.len(),
+            min,
+            max,
+        });
+    }
+
+    // Build the row sample, capped by both row count and serialized byte size.
+    let mut sample: Vec<&serde_json::Value> = Vec::new();
+    let mut bytes = 2usize; // account for the surrounding "[]"
+    for row in rows.iter().take(max_rows.max(1)) {
+        let serialized = serde_json::to_string(row).unwrap_or_default();
+        // +1 for the joining comma between elements.
+        if !sample.is_empty() && bytes + serialized.len() + 1 > max_bytes {
+            break;
+        }
+        bytes += serialized.len() + 1;
+        sample.push(row);
+        if bytes >= max_bytes {
+            break;
+        }
+    }
+
+    let sample_json = serde_json::to_string(&sample).unwrap_or_else(|_| "[]".to_string());
+
+    ResultDownsample {
+        row_count,
+        sampled_rows: sample.len(),
+        columns,
+        sample_json,
+    }
+}
+
+/// Explain / interpret a query result set in structured form, with schema KB
+/// context and (optionally) a follow-up question. `rows` is the full result the
+/// caller has; it is downsampled here for safety using `max_rows` / `max_bytes`.
+pub async fn explain_query_result(
+    query: &str,
+    engine: &str,
+    query_language: &str,
+    schema_context: &str,
+    rows: &[serde_json::Value],
+    question: Option<&str>,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<ResultExplanation, LlmError> {
+    let down = downsample_result(rows, max_rows, max_bytes);
+
+    let columns_desc = down
+        .columns
+        .iter()
+        .map(|c| {
+            let mut s = format!("- {} ({})", c.name, c.kind);
+            if let (Some(mn), Some(mx)) = (c.min, c.max) {
+                s.push_str(&format!(", min={}, max={}", mn, mx));
+            }
+            s.push_str(&format!(
+                ", distinct={}, nulls={}",
+                c.distinct_count, c.null_count
+            ));
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let question_block = match question {
+        Some(q) if !q.trim().is_empty() => format!(
+            "\nThe user has a specific follow-up question about this result:\n\"{}\"\nAnswer it directly in the summary.\n",
+            q.trim()
+        ),
+        _ => String::new(),
+    };
+
+    let schema_block = if schema_context.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\nDatabase schema context:\n{}\n", schema_context)
+    };
+
+    let prompt = format!(
+        r#"You are a data analyst. Interpret the result of a database query and return STRICT JSON only.
+
+Engine: {engine}
+Query language: {query_language}
+Query that produced the result:
+{query}
+{schema_block}
+Result overview:
+- total rows: {row_count}
+- rows sampled below: {sampled}
+Columns (stats computed over the FULL result):
+{columns_desc}
+
+Sample rows (JSON):
+{sample}
+{question_block}
+Return a JSON object with EXACTLY this structure (no markdown, no prose outside the JSON):
+{{
+  "summary": "2-4 sentence plain-English interpretation of what this result shows",
+  "key_findings": ["specific notable facts, numbers, or patterns"],
+  "anomalies": ["outliers, suspicious nulls, unexpected values; empty array if none"],
+  "suggested_followups": ["1-4 follow-up queries phrased as natural-language questions the user could ask next, appropriate for {query_language}"]
+}}
+
+Rules:
+- Base findings only on the data and stats provided; do not invent values.
+- Keep arrays concise (max 5 items each).
+- Output valid JSON only."#,
+        engine = engine,
+        query_language = query_language,
+        query = query,
+        schema_block = schema_block,
+        row_count = down.row_count,
+        sampled = down.sampled_rows,
+        columns_desc = columns_desc,
+        sample = down.sample_json,
+        question_block = question_block,
+    );
+
+    let response = call_llm_api(&prompt).await?;
+
+    let cleaned = response
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    match serde_json::from_str::<ResultExplanation>(cleaned) {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => {
+            // Fallback: surface the raw text as the summary so the user still
+            // gets something rather than an opaque parse error.
+            Ok(ResultExplanation {
+                summary: response.lines().next().unwrap_or("Result analysis").to_string(),
+                key_findings: vec![],
+                anomalies: vec![],
+                suggested_followups: vec![],
+            })
+        }
+    }
+}
+
 #[command]
 pub async fn generate_sample_queries(table_name: &str, columns: Vec<String>, db_type: &str) -> Result<Vec<String>, String> {
     let columns_str = columns.join(", ");
@@ -1052,6 +1312,77 @@ mod tests {
         );
         assert!(prompt.contains("DO NOT generate SQL"));
         assert!(prompt.contains("/profiles"));
+    }
+
+    #[test]
+    fn downsample_caps_rows_and_computes_stats() {
+        // 100 rows, two columns: numeric `n` and categorical `cat`.
+        let rows: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                serde_json::json!({
+                    "n": i,
+                    "cat": if i % 2 == 0 { "even" } else { "odd" },
+                })
+            })
+            .collect();
+
+        // Cap to 10 rows, generous byte budget so the row cap is what bites.
+        let down = downsample_result(&rows, 10, 64 * 1024);
+
+        assert_eq!(down.row_count, 100, "row_count is the FULL count");
+        assert_eq!(down.sampled_rows, 10, "sample is capped at max_rows");
+
+        let sample: Vec<serde_json::Value> =
+            serde_json::from_str(&down.sample_json).unwrap();
+        assert_eq!(sample.len(), 10, "sample_json honors the row cap");
+
+        let n_col = down.columns.iter().find(|c| c.name == "n").unwrap();
+        assert_eq!(n_col.kind, "number");
+        assert_eq!(n_col.min, Some(0.0), "min over full result");
+        assert_eq!(n_col.max, Some(99.0), "max over full result");
+        assert_eq!(n_col.distinct_count, 100);
+        assert_eq!(n_col.null_count, 0);
+
+        let cat_col = down.columns.iter().find(|c| c.name == "cat").unwrap();
+        assert_eq!(cat_col.kind, "string");
+        assert_eq!(cat_col.distinct_count, 2, "only 'even'/'odd'");
+    }
+
+    #[test]
+    fn downsample_byte_cap_bites_before_row_cap() {
+        // Wide rows so the byte budget is exhausted before max_rows.
+        let big_value = "x".repeat(500);
+        let rows: Vec<serde_json::Value> = (0..50)
+            .map(|i| serde_json::json!({ "id": i, "blob": big_value }))
+            .collect();
+
+        // ~1 KB budget against 50 rows of ~500 bytes each.
+        let down = downsample_result(&rows, 50, 1024);
+
+        assert_eq!(down.row_count, 50);
+        assert!(
+            down.sampled_rows >= 1 && down.sampled_rows < 50,
+            "byte cap should truncate the sample (got {})",
+            down.sampled_rows
+        );
+        assert!(
+            down.sample_json.len() <= 1024 + 600,
+            "sample stays roughly within the byte budget"
+        );
+    }
+
+    #[test]
+    fn downsample_handles_nulls_and_mixed_kinds() {
+        let rows = vec![
+            serde_json::json!({ "v": 1 }),
+            serde_json::json!({ "v": serde_json::Value::Null }),
+            serde_json::json!({ "v": "text" }),
+        ];
+        let down = downsample_result(&rows, 10, 8192);
+        let v = &down.columns[0];
+        assert_eq!(v.kind, "mixed", "number + string => mixed");
+        assert_eq!(v.null_count, 1);
+        assert_eq!(v.non_null_count, 2);
     }
 
     #[test]

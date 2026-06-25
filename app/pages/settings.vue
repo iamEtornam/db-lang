@@ -6,9 +6,48 @@ import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
 import { Separator } from '~/components/ui/separator'
-import type { LlmConfig } from '~/types/database'
+import type { LlmConfig, UserSettings } from '~/types/database'
 
 useHead({ title: 'Settings' })
+
+// ponytail: anomalies flagged by the AI are listed in the Insights panel rather
+// than highlighted inline on the result table — inline row matching would need
+// the model to return stable row identifiers, out of scope for this change.
+
+// User preferences (currently just the AI result-explanation row cap).
+const userSettings = ref<UserSettings | null>(null)
+const explainMaxRows = ref(50)
+const isSavingPrefs = ref(false)
+
+async function loadUserSettings() {
+  try {
+    const s = await invoke<UserSettings>('get_settings')
+    userSettings.value = s
+    explainMaxRows.value = s.explain_max_rows
+  }
+  catch (err) {
+    console.error('Failed to load user settings:', err)
+  }
+}
+
+async function savePreferences() {
+  isSavingPrefs.value = true
+  try {
+    // Clamp client-side too; the backend clamps to 1..1000 regardless.
+    const rows = Math.min(1000, Math.max(1, Math.round(explainMaxRows.value || 50)))
+    explainMaxRows.value = rows
+    userSettings.value = await invoke<UserSettings>('update_settings', {
+      settings: { explain_max_rows: rows },
+    })
+    toast.success('Preferences saved')
+  }
+  catch (err) {
+    toast.error('Failed to save preferences', { description: err as string })
+  }
+  finally {
+    isSavingPrefs.value = false
+  }
+}
 
 const llmConfig = ref<LlmConfig>({
   provider: 'gemini',
@@ -262,6 +301,7 @@ const {
 
 onMounted(() => {
   loadCurrentVersion()
+  loadUserSettings()
 })
 
 async function saveConfig() {
@@ -385,6 +425,39 @@ async function saveConfig() {
         <Icon v-if="isSaving" name="lucide:loader-2" class="size-4 animate-spin" />
         <Icon v-else name="lucide:save" class="size-4" />
         Save Settings
+      </Button>
+    </div>
+
+    <Separator />
+
+    <!-- AI Preferences -->
+    <div class="space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold">AI Preferences</h2>
+        <p class="text-xs text-muted-foreground">
+          Controls how much of a result set is sent to the AI when explaining results.
+        </p>
+      </div>
+
+      <div class="space-y-2">
+        <Label>Max rows sent to AI for result explanation</Label>
+        <Input
+          v-model.number="explainMaxRows"
+          type="number"
+          min="1"
+          max="1000"
+          placeholder="50"
+        />
+        <p class="text-xs text-muted-foreground">
+          Only this many rows (plus per-column stats and a row count) are sent to the
+          model — capped at ~8&nbsp;KB regardless. Lower it to reduce token cost; default is 50, max 1000.
+        </p>
+      </div>
+
+      <Button :disabled="isSavingPrefs" @click="savePreferences">
+        <Icon v-if="isSavingPrefs" name="lucide:loader-2" class="size-4 animate-spin" />
+        <Icon v-else name="lucide:save" class="size-4" />
+        Save Preferences
       </Button>
     </div>
 

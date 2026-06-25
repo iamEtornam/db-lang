@@ -45,6 +45,19 @@ impl std::fmt::Display for QueryLanguage {
     }
 }
 
+/// Map an engine string to its query language without instantiating a driver.
+/// Mirrors the engine matching in `create_driver`. Used where we only need the
+/// dialect (e.g. building an LLM prompt) and don't want to open a connection.
+pub fn query_language_for_engine(engine: &str) -> QueryLanguage {
+    match engine {
+        "mongodb" => QueryLanguage::Mql,
+        "redis" => QueryLanguage::Redis,
+        "firestore" => QueryLanguage::Firestore,
+        "firebase_rtdb" => QueryLanguage::FirebaseRtdb,
+        _ => QueryLanguage::Sql,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableInfo {
     pub name: String,

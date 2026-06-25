@@ -60,8 +60,18 @@ export interface UserSettings {
   default_page_size: number
   query_timeout_seconds: number
   auto_save_history: boolean
+  /** Max rows of a result set sent to the LLM when explaining results. */
+  explain_max_rows: number
   created_at: string
   updated_at: string
+}
+
+/** Structured AI interpretation of a query result set. */
+export interface ResultExplanation {
+  summary: string
+  key_findings: string[]
+  anomalies: string[]
+  suggested_followups: string[]
 }
 
 export interface LlmConfig {

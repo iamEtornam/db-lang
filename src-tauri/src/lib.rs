@@ -970,6 +970,78 @@ async fn explain_data(
         .map_err(|e| e.to_string())
 }
 
+/// Roughly 8 KB JSON cap on the downsampled sample shipped to the LLM. Paired
+/// with the user-configurable `explain_max_rows`; whichever bites first wins.
+const EXPLAIN_MAX_BYTES: usize = 8 * 1024;
+
+/// Interpret a result set with schema-KB + query context and return a
+/// structured explanation. `result_summary` is a JSON array of result rows (the
+/// frontend's downsampled view); it is re-downsampled on the Rust side. An
+/// optional `question` enables follow-ups without re-running the query.
+#[tauri::command]
+async fn explain_query_result(
+    connection_id: &str,
+    query: &str,
+    result_summary: &str,
+    question: Option<String>,
+) -> Result<gemini::ResultExplanation, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+
+    // The result rows arrive as a JSON array string from the frontend.
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(result_summary).map_err(|e| format!("Invalid result_summary JSON: {e}"))?;
+
+    // Identify the engine's query language without opening a DB connection.
+    let query_language = drivers::query_language_for_engine(&engine).to_string();
+
+    // Schema KB context for the referenced tables/collections, if generated.
+    let schema_context = match schema_kb::get_schema_kb(connection_id) {
+        Ok(Some(kb)) => schema_kb::build_schema_context(&kb),
+        _ => String::new(),
+    };
+
+    // Configurable row cap (defaults to 50; clamped on write).
+    let max_rows = get_app_database()
+        .ok()
+        .and_then(|db| db.get_user_settings().ok().flatten())
+        .map(|s| s.explain_max_rows.max(1) as usize)
+        .unwrap_or(commands::DEFAULT_EXPLAIN_MAX_ROWS as usize);
+
+    // Reuse the in-process cache so identical (query, result, question) triples
+    // don't re-bill the LLM. Key shape mirrors the query cache (conn_str + key).
+    let cache = connection_pool::get_cache();
+    let cache_payload = format!(
+        "explain_result\x1f{}\x1f{}\x1f{}",
+        query,
+        result_summary,
+        question.as_deref().unwrap_or("")
+    );
+    if let Some(hit) = cache.get(&conn_str, &cache_payload) {
+        if let Ok(parsed) = serde_json::from_str::<gemini::ResultExplanation>(&hit) {
+            return Ok(parsed);
+        }
+    }
+
+    let explanation = gemini::explain_query_result(
+        query,
+        &engine,
+        &query_language,
+        &schema_context,
+        &rows,
+        question.as_deref(),
+        max_rows,
+        EXPLAIN_MAX_BYTES,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Ok(serialized) = serde_json::to_string(&explanation) {
+        cache.set(&conn_str, &cache_payload, serialized);
+    }
+
+    Ok(explanation)
+}
+
 // ============ Schema Knowledge Base Commands ============
 
 #[tauri::command]
@@ -1130,6 +1202,7 @@ pub fn run() {
             // AI chart & data
             generate_chart_config,
             explain_data,
+            explain_query_result,
             // Schema Knowledge Base
             generate_schema_kb,
             get_schema_kb,
