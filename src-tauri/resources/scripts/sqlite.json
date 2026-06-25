@@ -1,0 +1,38 @@
+[
+  {
+    "name": "List tables",
+    "description": "All user tables in the database.",
+    "query_language": "sql",
+    "tags": "tables,overview",
+    "params": [],
+    "body": "SELECT name AS table_name\nFROM sqlite_master\nWHERE type = 'table' AND name NOT LIKE 'sqlite_%'\nORDER BY name;"
+  },
+  {
+    "name": "Row count for a table",
+    "description": "Exact number of rows in a chosen table.",
+    "query_language": "sql",
+    "tags": "tables,count",
+    "params": [
+      { "name": "table", "label": "Table name", "type": "table-name" }
+    ],
+    "body": "SELECT COUNT(*) AS row_count FROM \"{{table}}\";"
+  },
+  {
+    "name": "List indexes",
+    "description": "All indexes and the table they belong to.",
+    "query_language": "sql",
+    "tags": "indexes,schema",
+    "params": [],
+    "body": "SELECT name AS index_name, tbl_name AS table_name\nFROM sqlite_master\nWHERE type = 'index'\nORDER BY tbl_name, name;"
+  },
+  {
+    "name": "Column overview for a table",
+    "description": "Columns, types and nullability for a given table.",
+    "query_language": "sql",
+    "tags": "columns,schema",
+    "params": [
+      { "name": "table", "label": "Table name", "type": "table-name" }
+    ],
+    "body": "PRAGMA table_info('{{table}}');"
+  }
+]

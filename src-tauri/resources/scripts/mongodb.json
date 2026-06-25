@@ -1,0 +1,45 @@
+[
+  {
+    "name": "Collection document count",
+    "description": "Count all documents in a collection.",
+    "query_language": "mql",
+    "tags": "collections,count",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" }
+    ],
+    "body": "{{collection}}.[{ \"$count\": \"total\" }]"
+  },
+  {
+    "name": "Sample documents",
+    "description": "Return a random sample of documents from a collection.",
+    "query_language": "mql",
+    "tags": "collections,sample",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" },
+      { "name": "size", "label": "Sample size", "type": "number", "default": "5" }
+    ],
+    "body": "{{collection}}.[{ \"$sample\": { \"size\": {{size}} } }]"
+  },
+  {
+    "name": "Documents missing a field",
+    "description": "Find documents where a given field is absent. Useful for data quality checks.",
+    "query_language": "mql",
+    "tags": "quality,missing-field",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" },
+      { "name": "field", "label": "Field name", "type": "column-name" }
+    ],
+    "body": "{{collection}}.[{ \"$match\": { \"{{field}}\": { \"$exists\": false } } }, { \"$limit\": 50 }]"
+  },
+  {
+    "name": "Group counts by a field",
+    "description": "Count documents grouped by the distinct values of a field.",
+    "query_language": "mql",
+    "tags": "collections,stats",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" },
+      { "name": "field", "label": "Group-by field", "type": "column-name" }
+    ],
+    "body": "{{collection}}.[{ \"$group\": { \"_id\": \"${{field}}\", \"count\": { \"$sum\": 1 } } }, { \"$sort\": { \"count\": -1 } }]"
+  }
+]

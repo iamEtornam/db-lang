@@ -1,0 +1,46 @@
+[
+  {
+    "name": "List tables with row counts",
+    "description": "Estimated row count for every table in the current schema, largest first.",
+    "query_language": "sql",
+    "tags": "tables,overview",
+    "params": [],
+    "body": "SELECT relname AS table_name, n_live_tup AS estimated_rows\nFROM pg_stat_user_tables\nORDER BY n_live_tup DESC;"
+  },
+  {
+    "name": "Table sizes on disk",
+    "description": "Total size (table + indexes) of each table, largest first.",
+    "query_language": "sql",
+    "tags": "size,storage",
+    "params": [],
+    "body": "SELECT relname AS table_name,\n       pg_size_pretty(pg_total_relation_size(relid)) AS total_size\nFROM pg_catalog.pg_statio_user_tables\nORDER BY pg_total_relation_size(relid) DESC;"
+  },
+  {
+    "name": "Unused indexes",
+    "description": "Indexes that have never been scanned. Candidates for removal.",
+    "query_language": "sql",
+    "tags": "indexes,maintenance",
+    "params": [],
+    "body": "SELECT schemaname, relname AS table_name, indexrelname AS index_name,\n       idx_scan AS scans, pg_size_pretty(pg_relation_size(indexrelid)) AS index_size\nFROM pg_stat_user_indexes\nWHERE idx_scan = 0\nORDER BY pg_relation_size(indexrelid) DESC;"
+  },
+  {
+    "name": "Slowest queries (pg_stat_statements)",
+    "description": "Top queries by total execution time. Requires the pg_stat_statements extension.",
+    "query_language": "sql",
+    "tags": "performance,slow",
+    "params": [
+      { "name": "limit", "label": "Number of queries", "type": "number", "default": "20" }
+    ],
+    "body": "SELECT query, calls, total_exec_time, mean_exec_time\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT {{limit}};"
+  },
+  {
+    "name": "Column overview for a table",
+    "description": "Columns, types and nullability for a given table.",
+    "query_language": "sql",
+    "tags": "columns,schema",
+    "params": [
+      { "name": "table", "label": "Table name", "type": "table-name" }
+    ],
+    "body": "SELECT column_name, data_type, is_nullable, column_default\nFROM information_schema.columns\nWHERE table_name = '{{table}}'\nORDER BY ordinal_position;"
+  }
+]

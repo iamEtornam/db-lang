@@ -1,0 +1,34 @@
+[
+  {
+    "name": "List documents in a collection",
+    "description": "Return documents from a top-level collection.",
+    "query_language": "firestore",
+    "tags": "collections,list",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" }
+    ],
+    "body": "{{collection}}"
+  },
+  {
+    "name": "Order collection by field",
+    "description": "Return documents from a collection ordered by a field, ascending.",
+    "query_language": "firestore",
+    "tags": "collections,order",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" },
+      { "name": "field", "label": "Field name", "type": "column-name" }
+    ],
+    "body": "{{collection}}.{ \"orderBy\": [{ \"field\": { \"fieldPath\": \"{{field}}\" }, \"direction\": \"ASCENDING\" }], \"limit\": 50 }"
+  },
+  {
+    "name": "Limited document sample",
+    "description": "Return the first N documents from a collection.",
+    "query_language": "firestore",
+    "tags": "collections,sample",
+    "params": [
+      { "name": "collection", "label": "Collection name", "type": "table-name" },
+      { "name": "limit", "label": "Limit", "type": "number", "default": "10" }
+    ],
+    "body": "{{collection}}.{ \"limit\": {{limit}} }"
+  }
+]
