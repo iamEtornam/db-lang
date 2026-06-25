@@ -70,6 +70,23 @@ pub struct Snippet {
     pub updated_at: String,
 }
 
+/// Saved/built-in script model (multi-statement, optional typed params)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Script {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    /// JSON array of param definitions (see frontend ScriptParam type). "[]" when none.
+    pub params_json: String,
+    pub tags: String,
+    pub is_builtin: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// User settings model (no auth - single local user)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
@@ -175,6 +192,24 @@ impl AppDatabase {
                 natural_query TEXT NOT NULL,
                 sql_query TEXT NOT NULL,
                 tags TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Scripts table (saved multi-statement scripts + bundled built-in library)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scripts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                engine TEXT NOT NULL DEFAULT '',
+                query_language TEXT NOT NULL DEFAULT 'sql',
+                body TEXT NOT NULL,
+                params_json TEXT NOT NULL DEFAULT '[]',
+                tags TEXT NOT NULL DEFAULT '',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -520,6 +555,138 @@ impl AppDatabase {
             [id],
         )?;
         Ok(rows_affected > 0)
+    }
+
+    // ============ Script operations ============
+
+    pub fn create_script(&self, script: &Script) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO scripts (id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                &script.id,
+                &script.name,
+                &script.description,
+                &script.engine,
+                &script.query_language,
+                &script.body,
+                &script.params_json,
+                &script.tags,
+                script.is_builtin as i32,
+                &script.created_at,
+                &script.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_scripts(&self) -> Result<Vec<Script>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at
+             FROM scripts ORDER BY is_builtin DESC, name ASC",
+        )?;
+        let scripts = stmt
+            .query_map([], |row| {
+                Ok(Script {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    engine: row.get(3)?,
+                    query_language: row.get(4)?,
+                    body: row.get(5)?,
+                    params_json: row.get(6)?,
+                    tags: row.get(7)?,
+                    is_builtin: row.get::<_, i32>(8)? == 1,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(scripts)
+    }
+
+    pub fn get_script(&self, id: &str) -> Result<Option<Script>, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at
+                 FROM scripts WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(Script {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                        engine: row.get(3)?,
+                        query_language: row.get(4)?,
+                        body: row.get(5)?,
+                        params_json: row.get(6)?,
+                        tags: row.get(7)?,
+                        is_builtin: row.get::<_, i32>(8)? == 1,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(result)
+    }
+
+    /// Update a user script. Built-in scripts are read-only and are never matched here.
+    pub fn update_script(&self, script: &Script) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE scripts SET name = ?1, description = ?2, engine = ?3, query_language = ?4, body = ?5, params_json = ?6, tags = ?7, updated_at = ?8
+             WHERE id = ?9 AND is_builtin = 0",
+            rusqlite::params![
+                &script.name,
+                &script.description,
+                &script.engine,
+                &script.query_language,
+                &script.body,
+                &script.params_json,
+                &script.tags,
+                &script.updated_at,
+                &script.id,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Delete a user script. Built-in scripts cannot be deleted by the user.
+    pub fn delete_script(&self, id: &str) -> Result<bool, AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM scripts WHERE id = ?1 AND is_builtin = 0", [id])?;
+        Ok(rows > 0)
+    }
+
+    /// Replace the bundled built-in library: delete all is_builtin rows then
+    /// reinsert the provided set. Called on every startup so updates to the
+    /// shipped JSON take effect. User scripts (is_builtin=0) are untouched.
+    pub fn reseed_builtin_scripts(&self, scripts: &[Script]) -> Result<(), AppDbError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM scripts WHERE is_builtin = 1", [])?;
+        for s in scripts {
+            conn.execute(
+                "INSERT INTO scripts (id, name, description, engine, query_language, body, params_json, tags, is_builtin, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+                rusqlite::params![
+                    &s.id,
+                    &s.name,
+                    &s.description,
+                    &s.engine,
+                    &s.query_language,
+                    &s.body,
+                    &s.params_json,
+                    &s.tags,
+                    &s.created_at,
+                    &s.updated_at,
+                ],
+            )?;
+        }
+        Ok(())
     }
 
     // ============ User settings operations ============
