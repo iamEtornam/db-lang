@@ -1,5 +1,5 @@
 use crate::app_db::{
-    get_app_database, DbConnectionRecord, LlmConfig, QueryHistory, Snippet, UserSettings,
+    get_app_database, DbConnectionRecord, LlmConfig, QueryHistory, Script, Snippet, UserSettings,
 };
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -244,6 +244,88 @@ pub async fn delete_snippet(snippet_id: String) -> Result<bool, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
     db.delete_snippet(&snippet_id)
         .map_err(|e| e.to_string())
+}
+
+// ============ Script Commands ============
+
+#[derive(Debug, Deserialize)]
+pub struct CreateScriptRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    pub params_json: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateScriptRequest {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub engine: String,
+    pub query_language: String,
+    pub body: String,
+    pub params_json: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[command]
+pub async fn get_scripts() -> Result<Vec<Script>, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.get_scripts().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn create_script(script: CreateScriptRequest) -> Result<Script, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = Script {
+        id: Uuid::new_v4().to_string(),
+        name: script.name,
+        description: script.description,
+        engine: script.engine,
+        query_language: script.query_language,
+        body: script.body,
+        params_json: script.params_json.unwrap_or_else(|| "[]".to_string()),
+        tags: script.tags.unwrap_or_default(),
+        is_builtin: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    db.create_script(&record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+#[command]
+pub async fn update_script(script: UpdateScriptRequest) -> Result<bool, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = Script {
+        id: script.id,
+        name: script.name,
+        description: script.description,
+        engine: script.engine,
+        query_language: script.query_language,
+        body: script.body,
+        params_json: script.params_json.unwrap_or_else(|| "[]".to_string()),
+        tags: script.tags.unwrap_or_default(),
+        is_builtin: false,
+        created_at: String::new(),
+        updated_at: now,
+    };
+
+    db.update_script(&record).map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn delete_script(script_id: String) -> Result<bool, String> {
+    let db = get_app_database().map_err(|e| e.to_string())?;
+    db.delete_script(&script_id).map_err(|e| e.to_string())
 }
 
 // ============ Settings Commands ============
