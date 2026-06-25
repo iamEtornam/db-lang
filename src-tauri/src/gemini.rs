@@ -305,7 +305,7 @@ async fn call_llm_api(prompt: &str) -> Result<String, LlmError> {
 
 // ============ Utility ============
 
-fn contains_destructive_keywords(query: &str) -> bool {
+pub fn contains_destructive_keywords(query: &str) -> bool {
     let destructive_keywords = [
         "DROP", "DELETE", "UPDATE", "TRUNCATE", "ALTER", "INSERT",
         "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
