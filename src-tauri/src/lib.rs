@@ -1026,6 +1026,7 @@ async fn explain_query_result(
     query: &str,
     result_summary: &str,
     question: Option<String>,
+    force_refresh: Option<bool>,
 ) -> Result<gemini::ResultExplanation, String> {
     let (engine, conn_str) = resolve_connection(connection_id)?;
 
@@ -1058,9 +1059,13 @@ async fn explain_query_result(
         result_summary,
         question.as_deref().unwrap_or("")
     );
-    if let Some(hit) = cache.get(&conn_str, &cache_payload) {
-        if let Ok(parsed) = serde_json::from_str::<gemini::ResultExplanation>(&hit) {
-            return Ok(parsed);
+    // The "Refresh" button passes force_refresh=true to skip the cache and
+    // re-bill the LLM; otherwise an identical triple returns the cached result.
+    if !force_refresh.unwrap_or(false) {
+        if let Some(hit) = cache.get(&conn_str, &cache_payload) {
+            if let Ok(parsed) = serde_json::from_str::<gemini::ResultExplanation>(&hit) {
+                return Ok(parsed);
+            }
         }
     }
 

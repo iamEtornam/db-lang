@@ -49,14 +49,18 @@ const isGeneratingChart = ref(false)
 // Insights state (structured result explanation)
 const resultExplanation = ref<ResultExplanation | null>(null)
 const isGeneratingInsight = ref(false)
-// Rows downsampled on the first explain call, kept in frontend state so that
+// Rows captured on the first explain call, kept in frontend state so that
 // chat-style follow-ups reuse the same sample instead of re-shipping/re-running.
 const insightSampleRows = ref<Record<string, unknown>[]>([])
-const INSIGHT_SAMPLE_LIMIT = 50
+// Upper bound on rows handed to the backend; the backend then applies the
+// user's `explain_max_rows` setting and computes column stats over what it gets,
+// so this must be >= the max setting (1000) for stats to be representative.
+const INSIGHT_SAMPLE_LIMIT = 1000
 
 // Auto-generate chart/insight when tab is clicked if not yet generated
 watch(activeResultTab, async (tab) => {
-  if (!queryResult.value) return
+  // Skip auto-generation on empty result sets — nothing to chart or explain.
+  if (!queryResult.value || queryResult.value.rows.length === 0) return
   if (tab === 'chart' && !chartConfig.value && !isGeneratingChart.value) {
     await generateChart()
   }
@@ -92,11 +96,11 @@ async function generateChart() {
   }
 }
 
-async function generateInsight() {
-  if (!queryResult.value || !activeConnection.value) return
+async function generateInsight(forceRefresh = false) {
+  if (!queryResult.value || queryResult.value.rows.length === 0 || !activeConnection.value) return
   isGeneratingInsight.value = true
-  // Capture the downsampled sample once; reused by follow-up questions so we
-  // never re-run the query or re-ship the full result set.
+  // Capture the sample once; reused by follow-up questions so we never re-run
+  // the query or re-ship the full result set. The backend caps it further.
   insightSampleRows.value = queryResult.value.rows.slice(0, INSIGHT_SAMPLE_LIMIT)
   try {
     resultExplanation.value = await invoke<ResultExplanation>('explain_query_result', {
@@ -104,6 +108,7 @@ async function generateInsight() {
       query: generatedQuery.value,
       resultSummary: JSON.stringify(insightSampleRows.value),
       question: null,
+      forceRefresh,
     })
   }
   catch (err) {
@@ -658,7 +663,8 @@ function goToSettings() {
             :explanation="resultExplanation"
             :is-loading="isGeneratingInsight"
             :has-data="!!queryResult && queryResult.rows.length > 0"
-            @generate="generateInsight"
+            @generate="generateInsight()"
+            @refresh="generateInsight(true)"
             @ask="askFollowup"
             @use-followup="useFollowup"
           />
