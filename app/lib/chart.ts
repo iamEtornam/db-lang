@@ -50,8 +50,10 @@ function applyAggregate(fn: AggregateFn, values: number[]): number {
   switch (fn) {
     case 'sum': return values.reduce((a, b) => a + b, 0)
     case 'avg': return values.reduce((a, b) => a + b, 0) / values.length
-    case 'min': return Math.min(...values)
-    case 'max': return Math.max(...values)
+    // reduce, not Math.min/max(...values): spreading tens of thousands of rows
+    // overflows the call stack. values is non-empty here (guarded above).
+    case 'min': return values.reduce((min, v) => v < min ? v : min, values[0]!)
+    case 'max': return values.reduce((max, v) => v > max ? v : max, values[0]!)
     default: return values[0]!
   }
 }

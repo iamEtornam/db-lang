@@ -113,7 +113,7 @@ async function runQuery() {
     })
     const parsed = JSON.parse(data) as Record<string, unknown>[]
     rows.value = parsed
-    columns.value = parsed.length ? Object.keys(parsed[0]!) : []
+    columns.value = parsed.length && parsed[0] ? Object.keys(parsed[0]) : []
     autoPickFields()
   }
   catch (err) {
@@ -222,7 +222,7 @@ async function refreshSaved(chart: Chart) {
   try {
     const fresh = await chartsStore.runChart(chart.id)
     rows.value = fresh
-    columns.value = fresh.length ? Object.keys(fresh[0]!) : []
+    columns.value = fresh.length && fresh[0] ? Object.keys(fresh[0]) : []
     toast.success('Re-rendered with fresh data')
   }
   catch (err) {

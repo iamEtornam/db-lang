@@ -300,7 +300,10 @@ pub async fn save_chart(chart: SaveChartRequest) -> Result<Chart, String> {
                 created_at,
                 updated_at: now,
             };
-            db.update_chart(&record).map_err(|e| e.to_string())?;
+            let updated = db.update_chart(&record).map_err(|e| e.to_string())?;
+            if !updated {
+                return Err(format!("Chart with ID '{}' not found", record.id));
+            }
             Ok(record)
         }
         None => {
