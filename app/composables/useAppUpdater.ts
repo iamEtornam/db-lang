@@ -1,6 +1,7 @@
 import { getVersion } from '@tauri-apps/api/app'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check, type Update } from '@tauri-apps/plugin-updater'
+import { shallowRef, type ShallowRef } from 'vue'
 
 /// Throttle window for the silent boot-time check.
 const BOOT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -23,7 +24,7 @@ interface UpdaterStore {
   releaseNotes: Ref<string>
   lastChecked: Ref<Date | null>
   errorMessage: Ref<string>
-  pendingUpdate: Ref<Update | null>
+  pendingUpdate: ShallowRef<Update | null>
 }
 
 let store: UpdaterStore | null = null
@@ -55,7 +56,8 @@ function getStore(): UpdaterStore {
     releaseNotes: ref(''),
     lastChecked: ref<Date | null>(null),
     errorMessage: ref(''),
-    pendingUpdate: ref<Update | null>(null),
+    // Tauri Resource private fields require the original instance, never a Proxy.
+    pendingUpdate: shallowRef<Update | null>(null),
   }
   return store
 }
@@ -181,7 +183,8 @@ export function useAppUpdater() {
   async function installAndRelaunch(): Promise<void> {
     if (s.state.value !== 'ready') {
       await downloadAndInstall()
-      if (s.state.value !== 'ready') return
+      // The async install can change the ref beyond TypeScript's earlier narrowing.
+      if ((s.state.value as UpdaterState) !== 'ready') return
     }
     await relaunch()
   }
