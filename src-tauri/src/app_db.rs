@@ -1,4 +1,5 @@
-use rusqlite::{Connection, Result as SqliteResult};
+use rusqlite::{Connection, OptionalExtension, Result as SqliteResult};
+use crate::credential_vault::CredentialVault;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -130,6 +131,7 @@ pub struct LlmConfig {
 
 pub struct AppDatabase {
     conn: Mutex<Connection>,
+    vault: CredentialVault,
 }
 
 impl AppDatabase {
@@ -139,18 +141,18 @@ impl AppDatabase {
         })?;
 
         let db_path = app_data_dir.join("query_studio.db");
-        let conn = Connection::open(&db_path)?;
-
-        let db = AppDatabase {
-            conn: Mutex::new(conn),
-        };
-        db.run_migrations()?;
+        let mut conn = Connection::open(&db_path)?;
+        conn.execute_batch("PRAGMA secure_delete=ON;")?;
+        Self::run_migrations(&conn)?;
+        let vault = Self::prepare_vault(&mut conn, CredentialVault::open_os_key)?;
+        let db = AppDatabase { conn: Mutex::new(conn), vault };
+        // Authentication of every value is a startup requirement, never a fallback.
+        db.get_connections()?;
+        db.get_llm_config()?;
         Ok(db)
     }
 
-    fn run_migrations(&self) -> Result<(), AppDbError> {
-        let conn = self.conn.lock().unwrap();
-
+    fn run_migrations(conn: &Connection) -> Result<(), AppDbError> {
         // Database connections table (no user_id)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS connections (
@@ -287,7 +289,7 @@ impl AppDatabase {
             "CREATE TABLE IF NOT EXISTS llm_config (
                 id TEXT PRIMARY KEY DEFAULT 'local',
                 provider TEXT NOT NULL DEFAULT 'gemini',
-                model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+                model TEXT NOT NULL DEFAULT 'gemini-3.8-flash',
                 api_key TEXT NOT NULL DEFAULT '',
                 api_url TEXT,
                 created_at TEXT NOT NULL,
@@ -361,6 +363,91 @@ impl AppDatabase {
         Ok(())
     }
 
+    fn encrypt(&self, value: &str, context: &str) -> Result<String, AppDbError> {
+        self.vault.seal(value, context).map_err(AppDbError::DatabaseError)
+    }
+
+    fn decrypt(&self, value: &str, context: &str) -> Result<String, AppDbError> {
+        self.vault.unseal(value, context).map_err(AppDbError::DatabaseError)
+    }
+
+    fn prepare_vault(
+        conn: &mut Connection,
+        load_key: impl Fn(&str, bool) -> Result<CredentialVault, String>,
+    ) -> Result<CredentialVault, AppDbError> {
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS credential_vault (id TEXT PRIMARY KEY, cleanup_pending INTEGER NOT NULL DEFAULT 0);")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id: Option<String> = tx.query_row("SELECT id FROM credential_vault LIMIT 1", [], |row| row.get(0)).optional()?;
+        let creating = id.is_none();
+        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let vault = load_key(&id, creating).map_err(AppDbError::DatabaseError)?;
+        if creating {
+            let records: Vec<(String, String, String, String)> = {
+                let mut stmt = tx.prepare("SELECT id, host, password, auth_json FROM connections")?;
+                let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            for (id, host, password, auth_json) in records {
+                let encrypt = |value: &str, field: &str| vault.seal(value, &format!("connections/{id}/{field}")).map_err(AppDbError::DatabaseError);
+                tx.execute("UPDATE connections SET host=?1, password=?2, auth_json=?3 WHERE id=?4", rusqlite::params![encrypt(&host, "host")?, encrypt(&password, "password")?, encrypt(&auth_json, "auth_json")?, id])?;
+            }
+            let llm: Option<(String, Option<String>)> = tx.query_row("SELECT api_key, api_url FROM llm_config WHERE id='local'", [], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+            if let Some((api_key, api_url)) = llm {
+                let key = vault.seal(&api_key, "llm_config/local/api_key").map_err(AppDbError::DatabaseError)?;
+                let url = api_url.as_ref().map(|v| vault.seal(v, "llm_config/local/api_url")).transpose().map_err(AppDbError::DatabaseError)?;
+                tx.execute("UPDATE llm_config SET api_key=?1, api_url=?2 WHERE id='local'", rusqlite::params![key, url])?;
+            }
+            tx.execute("INSERT INTO credential_vault (id, cleanup_pending) VALUES (?1, 1)", [&id])?;
+        }
+        tx.commit()?;
+        let pending: bool = conn.query_row("SELECT cleanup_pending FROM credential_vault WHERE id=?1", [&id], |row| row.get(0))?;
+        if pending {
+            // Reclaim pre-migration free pages and checkpoint any legacy WAL.
+            // Failure leaves the cleanup marker set so the next startup retries.
+            let checkpoint = |conn: &Connection| -> Result<(), AppDbError> {
+                let busy: i32 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+                if busy != 0 { return Err(AppDbError::DatabaseError("Close other Query Studio instances and retry credential migration".into())); }
+                Ok(())
+            };
+            checkpoint(conn)?;
+            conn.execute_batch("VACUUM;")?;
+            checkpoint(conn)?;
+            conn.execute("UPDATE credential_vault SET cleanup_pending=0 WHERE id=?1", [&id])?;
+        }
+        Ok(vault)
+    }
+
+    pub fn import_connections(&self, mut records: Vec<DbConnectionRecord>) -> Result<usize, AppDbError> {
+        if records.is_empty() || records.len() > 1000 { return Err(AppDbError::InvalidData("Import between 1 and 1000 connections".into())); }
+        let allowed = ["postgres", "mysql", "mariadb", "sqlite", "mongodb", "redis", "firestore", "firebase_rtdb"];
+        for record in &records {
+            record.options.validate(&record.db_type, &record.host, &record.port).map_err(AppDbError::InvalidData)?;
+            if !allowed.contains(&record.db_type.as_str()) || record.name.trim().is_empty() || record.name.len() > 128 || (record.host.trim().is_empty() && record.db_type != "firestore") {
+                return Err(AppDbError::InvalidData("Backup contains an invalid connection profile".into()));
+            }
+            if ["firestore", "firebase_rtdb"].contains(&record.db_type.as_str()) {
+                crate::drivers::firebase_auth::ServiceAccount::from_json(&record.auth_json)
+                    .map_err(|_| AppDbError::InvalidData("Backup contains invalid Firebase service-account JSON".into()))?;
+            }
+        }
+        let count = records.len();
+        let mut conn = self.conn.lock().map_err(|_| AppDbError::DatabaseError("Credential database lock failed".into()))?;
+        let tx = conn.transaction()?;
+        for record in &mut records {
+            record.id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            tx.execute("INSERT INTO connections (id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at, options_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12)", rusqlite::params![
+                record.id, record.name, record.db_type,
+                self.encrypt(&record.host, &format!("connections/{}/host", record.id))?, record.port, record.database, record.username,
+                self.encrypt(&record.password, &format!("connections/{}/password", record.id))?, record.ssl_enabled as i32,
+                self.encrypt(&record.auth_json, &format!("connections/{}/auth_json", record.id))?, now, serde_json::to_string(&record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
+            ])?;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     // ============ Connection operations ============
 
     pub fn create_connection(&self, conn_record: &DbConnectionRecord) -> Result<(), AppDbError> {
@@ -373,13 +460,13 @@ impl AppDatabase {
                 &conn_record.id,
                 &conn_record.name,
                 &conn_record.db_type,
-                &conn_record.host,
+                &self.encrypt(&conn_record.host, &format!("connections/{}/host", conn_record.id))?,
                 &conn_record.port,
                 &conn_record.database,
                 &conn_record.username,
-                &conn_record.password,
+                &self.encrypt(&conn_record.password, &format!("connections/{}/password", conn_record.id))?,
                 conn_record.ssl_enabled as i32,
-                &conn_record.auth_json,
+                &self.encrypt(&conn_record.auth_json, &format!("connections/{}/auth_json", conn_record.id))?,
                 &conn_record.created_at,
                 &conn_record.updated_at,
                 serde_json::to_string(&conn_record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
@@ -395,7 +482,7 @@ impl AppDatabase {
              FROM connections ORDER BY created_at DESC",
         )?;
 
-        let connections = stmt
+        let mut connections = stmt
             .query_map([], |row| {
                 Ok(DbConnectionRecord {
                     id: row.get(0)?,
@@ -415,6 +502,11 @@ impl AppDatabase {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        for connection in &mut connections {
+            connection.host = self.decrypt(&connection.host, &format!("connections/{}/host", connection.id))?;
+            connection.password = self.decrypt(&connection.password, &format!("connections/{}/password", connection.id))?;
+            connection.auth_json = self.decrypt(&connection.auth_json, &format!("connections/{}/auth_json", connection.id))?;
+        }
         Ok(connections)
     }
 
@@ -427,13 +519,13 @@ impl AppDatabase {
             rusqlite::params![
                 &conn_record.name,
                 &conn_record.db_type,
-                &conn_record.host,
+                &self.encrypt(&conn_record.host, &format!("connections/{}/host", conn_record.id))?,
                 &conn_record.port,
                 &conn_record.database,
                 &conn_record.username,
-                &conn_record.password,
+                &self.encrypt(&conn_record.password, &format!("connections/{}/password", conn_record.id))?,
                 conn_record.ssl_enabled as i32,
-                &conn_record.auth_json,
+                &self.encrypt(&conn_record.auth_json, &format!("connections/{}/auth_json", conn_record.id))?,
                 now,
                 &conn_record.id,
                 serde_json::to_string(&conn_record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
@@ -898,7 +990,7 @@ impl AppDatabase {
              FROM llm_config WHERE id = 'local'",
         )?;
 
-        let config = stmt
+        let mut config = stmt
             .query_row([], |row| {
                 Ok(LlmConfig {
                     provider: row.get(0)?,
@@ -909,8 +1001,12 @@ impl AppDatabase {
                     updated_at: row.get(5)?,
                 })
             })
-            .ok();
+            .optional()?;
 
+        if let Some(value) = &mut config {
+            value.api_key = self.decrypt(&value.api_key, "llm_config/local/api_key")?;
+            value.api_url = value.api_url.as_ref().map(|v| self.decrypt(v, "llm_config/local/api_url")).transpose()?;
+        }
         Ok(config)
     }
 
@@ -928,8 +1024,8 @@ impl AppDatabase {
             rusqlite::params![
                 &config.provider,
                 &config.model,
-                &config.api_key,
-                &config.api_url,
+                &self.encrypt(&config.api_key, "llm_config/local/api_key")?,
+                &config.api_url.as_ref().map(|v| self.encrypt(v, "llm_config/local/api_url")).transpose()?,
                 &config.created_at,
                 &config.updated_at,
             ],
@@ -1117,15 +1213,126 @@ pub struct RelationshipDescriptionRecord {
 
 // Global database instance
 static APP_DB: std::sync::OnceLock<AppDatabase> = std::sync::OnceLock::new();
+static INIT_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn init_app_database(app_data_dir: PathBuf) -> Result<(), AppDbError> {
-    let db = AppDatabase::new(app_data_dir)?;
+    if APP_DB.get().is_some() { return Ok(()); }
+    let db = AppDatabase::new(app_data_dir).map_err(|e| {
+        if let Ok(mut error) = INIT_ERROR.lock() { *error = Some(e.to_string()); }
+        e
+    })?;
     APP_DB.set(db).map_err(|_| AppDbError::DatabaseError("Database already initialized".to_string()))?;
+    if let Ok(mut error) = INIT_ERROR.lock() { *error = None; }
     Ok(())
 }
 
 pub fn get_app_database() -> Result<&'static AppDatabase, AppDbError> {
-    APP_DB.get().ok_or(AppDbError::DatabaseError("Database not initialized".to_string()))
+    APP_DB.get().ok_or_else(|| AppDbError::DatabaseError(INIT_ERROR.lock().ok().and_then(|e| e.clone()).unwrap_or_else(|| "Database not initialized".into())))
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn legacy_database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA secure_delete=ON;").unwrap();
+        AppDatabase::run_migrations(&conn).unwrap();
+        conn.execute("INSERT INTO connections (id,name,db_type,host,port,username,password,auth_json,created_at,updated_at) VALUES ('a','Legacy','mongodb','mongodb://user:uri-secret@localhost','27017','user','password-secret','service-account-secret','now','now')", []).unwrap();
+        conn.execute("INSERT INTO llm_config (id,provider,model,api_key,api_url,created_at,updated_at) VALUES ('local','gemini','model','api-secret','https://api.example.test?token=url-secret','now','now')", []).unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrates_legacy_values_once_and_preserves_driver_values() {
+        let mut conn = legacy_database();
+        let vault = AppDatabase::prepare_vault(&mut conn, |_, create| {
+            assert!(create);
+            CredentialVault::from_key(&[7; 32])
+        }).unwrap();
+        let stored: String = conn.query_row("SELECT password FROM connections WHERE id='a'", [], |r| r.get(0)).unwrap();
+        assert!(!stored.contains("password-secret"));
+        AppDatabase::prepare_vault(&mut conn, |_, create| {
+            assert!(!create);
+            CredentialVault::from_key(&[7; 32])
+        }).unwrap();
+        let stored_again: String = conn.query_row("SELECT password FROM connections WHERE id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, stored_again);
+        let db = AppDatabase { conn: Mutex::new(conn), vault };
+        let record = &db.get_connections().unwrap()[0];
+        assert_eq!(record.password, "password-secret");
+        assert_eq!(record.auth_json, "service-account-secret");
+        assert!(record.host.contains("uri-secret"));
+        let config = db.get_llm_config().unwrap().unwrap();
+        assert_eq!(config.api_key, "api-secret");
+        assert!(config.api_url.unwrap().contains("url-secret"));
+        let mut updated = record.clone();
+        updated.password = "changed-secret".into();
+        db.update_connection(&updated).unwrap();
+        assert_eq!(db.get_connections().unwrap()[0].password, "changed-secret");
+    }
+
+    #[test]
+    fn failed_key_access_preserves_legacy_data_and_missing_keys_never_regenerate() {
+        let mut conn = legacy_database();
+        assert!(AppDatabase::prepare_vault(&mut conn, |_, _| Err("Locked test keychain".into())).is_err());
+        let stored: String = conn.query_row("SELECT password FROM connections WHERE id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, "password-secret");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM credential_vault", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        AppDatabase::prepare_vault(&mut conn, |_, _| CredentialVault::from_key(&[7; 32])).unwrap();
+        assert!(AppDatabase::prepare_vault(&mut conn, |_, create| {
+            assert!(!create);
+            Err("Missing test key".into())
+        }).is_err());
+    }
+
+    #[test]
+    fn imported_profiles_use_fresh_ids_and_local_encryption_atomically() {
+        let mut conn = legacy_database();
+        let vault = AppDatabase::prepare_vault(&mut conn, |_, _| CredentialVault::from_key(&[7; 32])).unwrap();
+        let db = AppDatabase { conn: Mutex::new(conn), vault };
+        let mut record = db.get_connections().unwrap()[0].clone();
+        record.db_type = "postgres".into(); record.host = "db.internal".into(); record.port = "5432".into();
+        record.options = crate::connection_options::ConnectionOptions { group: "Analytics".into(), environment: "production".into(), read_only: true, ssh: Some(crate::connection_options::SshConfig { host: "bastion.example.com".into(), port: 22, username: "reader".into(), identity_file: None }) };
+        assert_eq!(db.import_connections(vec![record.clone()]).unwrap(), 1);
+        let records = db.get_connections().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0].id, records[1].id);
+        assert_eq!(records.iter().find(|r| r.id != record.id).unwrap().options, record.options);
+        let mut invalid_options = record.clone(); invalid_options.options.environment = "invalid".into();
+        assert!(db.import_connections(vec![record.clone(), invalid_options]).is_err());
+        assert_eq!(db.get_connections().unwrap().len(), 2);
+        assert!(records.iter().all(|r| r.password == "password-secret"));
+        let mut invalid = record.clone();
+        invalid.db_type = "not-an-engine".into();
+        assert!(db.import_connections(vec![record.clone(), invalid]).is_err());
+        assert_eq!(db.get_connections().unwrap().len(), 2);
+        let mut invalid_firebase = record.clone();
+        invalid_firebase.db_type = "firestore".into();
+        invalid_firebase.auth_json = String::new();
+        assert!(db.import_connections(vec![record, invalid_firebase]).is_err());
+        assert_eq!(db.get_connections().unwrap().len(), 2);
+    }
+}
+
+#[derive(Serialize)]
+pub struct CredentialStorageStatus {
+    ready: bool,
+    error: Option<String>,
+}
+
+#[command]
+pub fn credential_storage_status() -> CredentialStorageStatus {
+    CredentialStorageStatus {
+        ready: APP_DB.get().is_some(),
+        error: INIT_ERROR.lock().ok().and_then(|e| e.clone()),
+    }
+}
+
+#[command]
+pub fn retry_credential_storage() -> Result<(), String> {
+    init_app_database(crate::get_app_data_dir()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1133,10 +1340,11 @@ mod connection_option_tests {
     use super::*;
     #[test]
     fn options_migrate_and_roundtrip_without_changing_credentials() {
-        let connection = Connection::open_in_memory().unwrap();
-        let database = AppDatabase { conn: Mutex::new(connection) };
-        database.run_migrations().unwrap();
-        database.run_migrations().unwrap();
+        let mut connection = Connection::open_in_memory().unwrap();
+        AppDatabase::run_migrations(&connection).unwrap();
+        AppDatabase::run_migrations(&connection).unwrap();
+        let vault = AppDatabase::prepare_vault(&mut connection, |_, _| CredentialVault::from_key(&[7; 32])).unwrap();
+        let database = AppDatabase { conn: Mutex::new(connection), vault };
         let mut record = DbConnectionRecord { id: "fixture".into(), name: "Fixture".into(), db_type: "postgres".into(), host: "db.internal".into(), port: "5432".into(), database: "data".into(), username: "reader".into(), password: "fixture-only".into(), ssl_enabled: false, auth_json: String::new(), options: Default::default(), created_at: "now".into(), updated_at: "now".into() };
         database.create_connection(&record).unwrap();
         assert_eq!(database.get_connections().unwrap()[0].options, Default::default());
