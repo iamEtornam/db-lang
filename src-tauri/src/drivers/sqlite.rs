@@ -20,6 +20,10 @@ impl SqliteDriver {
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
+    pub async fn set_query_deadline(&self, deadline: std::time::Instant) {
+        self.conn.lock().await.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline));
+    }
+
     async fn query_rows(&self, query: &str) -> Result<Vec<Value>, DriverError> {
         let conn = self.conn.lock().await;
         let mut stmt = conn

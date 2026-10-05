@@ -1,4 +1,5 @@
 mod app_db;
+pub mod automation;
 mod credential_vault;
 mod commands;
 mod connection_pool;
