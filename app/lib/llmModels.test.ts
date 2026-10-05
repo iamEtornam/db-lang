@@ -13,6 +13,7 @@ describe('model catalog', () => {
   })
   it('filters malformed Gemini catalogs and non-text models', () => {
     expect(geminiTextModels(null)).toEqual([])
+    expect(geminiTextModels(['gemini-3.8-flash', 'gemini-3.8-flash-tts'])).toEqual(['gemini-3.8-flash'])
     const row = (name: string) => ({name,supportedGenerationMethods:['generateContent']})
     expect(geminiTextModels([row('models/gemini-3.8-flash'),row('models/gemini-3.8-flash'),row('models/gemini-3.8-flash-tts'),row('models/gemini-3-pro-image'),row('models/gemini-3.8-live'),row('models/gemini-omni-1.1-flash'),{name:'embedding',supportedGenerationMethods:['embedContent']},{name:7},null])).toEqual(['gemini-3.8-flash'])
   })

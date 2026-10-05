@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CredentialStorageNotice from '~/components/shared/CredentialStorageNotice.vue'
 import { SidebarProvider, SidebarInset } from '~/components/ui/sidebar'
 </script>
 
@@ -14,6 +15,7 @@ import { SidebarProvider, SidebarInset } from '~/components/ui/sidebar'
     <SidebarInset>
       <LayoutHeader />
       <main class="flex flex-1 flex-col min-h-0 overflow-y-auto overflow-x-hidden p-4 pt-0">
+        <CredentialStorageNotice />
         <slot />
       </main>
     </SidebarInset>

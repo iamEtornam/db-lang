@@ -9,6 +9,11 @@ export interface Connection {
   password: string
   ssl_enabled: boolean
   auth_json: string
+  has_password?: boolean
+  has_auth_json?: boolean
+  clear_password?: boolean
+  clear_auth_json?: boolean
+  replace_host?: boolean
   created_at: string
   updated_at: string
 }
@@ -47,6 +52,26 @@ export interface TableSchema {
   columns: ColumnInfo[]
 }
 
+export interface DiagramTable extends TableInfo {
+  columns: ColumnInfo[]
+  columns_error: string | null
+}
+
+export interface ForeignKey {
+  source_schema: string | null
+  target_schema: string | null
+  source_table: string
+  source_column: string
+  target_table: string
+  target_column: string
+  relationship_type: string | null
+}
+
+export interface ErSchema {
+  tables: DiagramTable[]
+  relationships: ForeignKey[]
+}
+
 export interface PaginatedResult {
   data: string
   total_count: number | null
@@ -75,6 +100,7 @@ export interface ResultExplanation {
 }
 
 export interface LlmConfig {
+  has_api_key?: boolean
   provider: string
   model: string
   api_key: string

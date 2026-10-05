@@ -19,7 +19,7 @@ const open = defineModel<boolean>('open', { default: false })
 const connectionsStore = useConnectionsStore()
 const isEditMode = computed(() => !!props.editConnection)
 
-const selectedEngine = ref<DatabaseEngine>(engines[0])
+const selectedEngine = ref<DatabaseEngine>(engines[0]!)
 const isTesting = ref(false)
 const isSaving = ref(false)
 const saveError = ref<string | null>(null)
@@ -36,36 +36,13 @@ function defaultFormForEngine(engine: DatabaseEngine) {
     password: '',
     ssl_enabled: false,
     auth_json: '',
+    clear_password: false,
+    clear_auth_json: false,
+    replace_host: false,
   }
 }
 
-const form = ref(defaultFormForEngine(engines[0]))
-
-// When editing, populate form with existing data
-watch(() => props.editConnection, (conn) => {
-  if (conn) {
-    const engine = engines.find(e => e.id === conn.db_type) ?? engines[0]
-    selectedEngine.value = engine
-    form.value = {
-      name: conn.name,
-      host: conn.host,
-      port: conn.port,
-      database: conn.database,
-      username: conn.username,
-      password: conn.password,
-      ssl_enabled: conn.ssl_enabled,
-      auth_json: conn.auth_json || '',
-    }
-    if (conn.auth_json) {
-      parseServiceAccountJson(conn.auth_json)
-    }
-    if (engine.id === 'mongodb') {
-      mongoMode.value = isMongoUri(conn.host) ? 'uri' : 'manual'
-    }
-    testResult.value = null
-    saveError.value = null
-  }
-}, { immediate: true })
+const form = ref(defaultFormForEngine(engines[0]!))
 
 // When switching engine type in new-connection mode, reset host/port/db/user defaults
 function onEngineChange(engine: DatabaseEngine) {
@@ -99,6 +76,8 @@ const isFirestoreOnly = computed(() => selectedEngine.value.id === 'firestore')
 const isRtdbOnly = computed(() => selectedEngine.value.id === 'firebase_rtdb')
 const isMongo = computed(() => selectedEngine.value.id === 'mongodb')
 const firebaseProjectId = ref('')
+const keepsServiceAccount = computed(() => props.editConnection?.db_type === selectedEngine.value.id && props.editConnection?.has_auth_json && !form.value.clear_auth_json)
+const keepsPassword = computed(() => props.editConnection?.db_type === selectedEngine.value.id && props.editConnection?.has_password)
 
 // MongoDB supports two entry modes: paste a full URI (mongodb:// or
 // mongodb+srv://) or fill in host/port/user/password manually. URI mode is
@@ -108,6 +87,35 @@ const mongoMode = ref<'uri' | 'manual'>('manual')
 watch(selectedEngine, (engine) => {
   if (engine.id === 'mongodb') {
     mongoMode.value = isMongoUri(form.value.host) ? 'uri' : 'manual'
+  }
+}, { immediate: true })
+
+// When editing, populate form with existing data
+watch(() => props.editConnection, (conn) => {
+  if (conn) {
+    const engine = engines.find(e => e.id === conn.db_type) ?? engines[0]!
+    selectedEngine.value = engine
+    form.value = {
+      name: conn.name,
+      host: conn.host,
+      port: conn.port,
+      database: conn.database,
+      username: conn.username,
+      password: '',
+      ssl_enabled: conn.ssl_enabled,
+      auth_json: '',
+      clear_password: false,
+      clear_auth_json: false,
+    replace_host: false,
+    }
+    if (conn.auth_json) {
+      parseServiceAccountJson(conn.auth_json)
+    }
+    if (engine.id === 'mongodb') {
+      mongoMode.value = isMongoUri(conn.host) ? 'uri' : 'manual'
+    }
+    testResult.value = null
+    saveError.value = null
   }
 }, { immediate: true })
 
@@ -148,7 +156,7 @@ function parseServiceAccountJson(raw: string) {
 }
 
 async function testConnection() {
-  if (isFirebase.value && !form.value.auth_json) {
+  if (isFirebase.value && !form.value.auth_json && !keepsServiceAccount.value) {
     toast.error('Please provide the service account JSON')
     return
   }
@@ -161,20 +169,12 @@ async function testConnection() {
   testResult.value = null
 
   try {
-    let connStr = connectionPreview.value
-    if (isFirebase.value) {
-      // Preview is display-only; ask the backend to build the real base64 blob
-      // that the firestore / firebase_rtdb drivers expect.
-      connStr = await invoke<string>('build_firebase_conn_str', {
-        authJson: form.value.auth_json,
-        databaseUrl: isRtdbOnly.value ? form.value.host : null,
-        firestoreDbId: isFirestoreOnly.value ? form.value.database : null,
-      })
-    }
-
-    await invoke('test_connection', {
-      engine: selectedEngine.value.id,
-      connStr,
+    await invoke('test_connection_draft', {
+      connection: { ...form.value, db_type: selectedEngine.value.id },
+      connectionId: props.editConnection?.id ?? null,
+      clearPassword: form.value.clear_password,
+      clearAuthJson: form.value.clear_auth_json,
+      replaceHost: form.value.replace_host,
     })
     testResult.value = 'success'
     testMessage.value = 'Connection successful!'
@@ -198,7 +198,7 @@ async function saveConnection() {
     return
   }
   if (isFirebase.value) {
-    if (!form.value.auth_json.trim()) {
+    if (!form.value.auth_json.trim() && !keepsServiceAccount.value) {
       saveError.value = 'Please provide the service account JSON.'
       return
     }
@@ -229,8 +229,12 @@ async function saveConnection() {
         password: form.value.password,
         ssl_enabled: form.value.ssl_enabled,
         auth_json: form.value.auth_json || '',
+        clear_password: form.value.clear_password,
+        clear_auth_json: form.value.clear_auth_json,
+        replace_host: form.value.replace_host,
       })
 
+      if (!result) saveError.value = connectionsStore.error || 'Could not save connection'
       if (result) {
         toast.success('Connection updated')
         open.value = false
@@ -265,8 +269,8 @@ async function saveConnection() {
 }
 
 function resetForm() {
-  selectedEngine.value = engines[0]
-  form.value = defaultFormForEngine(engines[0])
+  selectedEngine.value = engines[0]!
+  form.value = defaultFormForEngine(engines[0]!)
   testResult.value = null
   saveError.value = null
 }
@@ -276,15 +280,19 @@ watch(open, (val) => {
     // Pre-fill defaults when opening for a new connection
     resetForm()
   }
-  if (!val && !isEditMode.value) {
-    resetForm()
+  if (!val) {
+    form.value.password = ''
+    form.value.auth_json = ''
+    form.value.clear_password = false
+    form.value.clear_auth_json = false
+    form.value.replace_host = false
   }
 })
 </script>
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-lg">
+    <DialogContent class="max-w-lg max-h-[90svh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <Icon :name="isEditMode ? 'lucide:pencil' : 'lucide:plug'" class="size-5" />
@@ -362,6 +370,7 @@ watch(open, (val) => {
               spellcheck="false"
               @input="parseServiceAccountJson(($event.target as HTMLTextAreaElement).value)"
             />
+            <p v-if="keepsServiceAccount" class="text-xs text-muted-foreground">Service account saved. Leave blank to keep it, or paste a replacement.</p>
             <p v-if="firebaseProjectId" class="text-xs text-muted-foreground">
               Project: <span class="font-mono font-medium text-foreground">{{ firebaseProjectId }}</span>
             </p>
@@ -455,6 +464,7 @@ watch(open, (val) => {
                 id="mongo-uri-password"
                 v-model="form.password"
                 type="password"
+                :disabled="form.clear_password"
                 :placeholder="isEditMode ? '(unchanged)' : 'Substituted into <db_password>'"
                 autocomplete="new-password"
                 autocorrect="off"
@@ -525,6 +535,7 @@ watch(open, (val) => {
                   id="password"
                   v-model="form.password"
                   type="password"
+                  :disabled="form.clear_password"
                   :placeholder="isEditMode ? '(unchanged)' : '••••••••'"
                   autocomplete="new-password"
                   autocorrect="off"
@@ -535,6 +546,18 @@ watch(open, (val) => {
             </div>
           </template>
         </template>
+
+        <label v-if="keepsPassword" class="flex items-center gap-2 text-sm">
+          <input v-model="form.clear_password" type="checkbox" :disabled="isSaving || isTesting" />
+          Remove saved password field
+        </label>
+        <p v-if="keepsPassword && !form.clear_password" class="text-xs text-muted-foreground">Password saved. Leave blank to keep it.</p>
+        <p v-if="isMongo && isEditMode && mongoMode === 'uri'" class="text-xs text-muted-foreground">Saved URI credentials and options are hidden. Leave the URI unchanged to keep them, or paste a complete replacement.</p>
+
+        <label v-if="isMongo && isEditMode && mongoMode === 'uri'" class="flex items-center gap-2 text-sm">
+          <input v-model="form.replace_host" type="checkbox" />
+          Replace the entire saved URI with the value above
+        </label>
 
         <!-- Connection preview -->
         <div v-if="connectionPreview" class="rounded-md bg-muted p-2.5">
@@ -559,12 +582,12 @@ watch(open, (val) => {
       </div>
 
       <DialogFooter class="gap-2">
-        <Button variant="outline" :disabled="isTesting" @click="testConnection">
+        <Button variant="outline" :disabled="isTesting || isSaving" @click="testConnection">
           <Icon v-if="isTesting" name="lucide:loader-2" class="size-4 animate-spin" />
           <Icon v-else name="lucide:zap" class="size-4" />
           Test
         </Button>
-        <Button :disabled="isSaving" @click="saveConnection">
+        <Button :disabled="isSaving || isTesting" @click="saveConnection">
           <Icon v-if="isSaving" name="lucide:loader-2" class="size-4 animate-spin" />
           <Icon v-else name="lucide:save" class="size-4" />
           {{ isEditMode ? 'Save Changes' : 'Save & Connect' }}

@@ -7,7 +7,7 @@ export function modelChoices(suggestions: string[], selected: string) {
 }
 export function geminiTextModels(rawModels: unknown): string[] {
   if (!Array.isArray(rawModels)) return []
-  return [...new Set(rawModels.filter(row => row && typeof row.name === 'string' && Array.isArray(row.supportedGenerationMethods) && row.supportedGenerationMethods.includes('generateContent'))
-    .map(row => row.name.replace(/^models\//, '') as string)
+  return [...new Set(rawModels.flatMap(row => typeof row === 'string' ? [row] : row && typeof row.name === 'string' && Array.isArray(row.supportedGenerationMethods) && row.supportedGenerationMethods.includes('generateContent') ? [row.name as string] : [])
+    .map(name => name.replace(/^models\//, ''))
     .filter(name => name.startsWith('gemini-') && !/(?:image|tts|audio|live|transcribe|omni|robotics)/i.test(name)))]
 }
