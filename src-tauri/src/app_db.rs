@@ -441,7 +441,7 @@ impl AppDatabase {
                 record.id, record.name, record.db_type,
                 self.encrypt(&record.host, &format!("connections/{}/host", record.id))?, record.port, record.database, record.username,
                 self.encrypt(&record.password, &format!("connections/{}/password", record.id))?, record.ssl_enabled as i32,
-                self.encrypt(&record.auth_json, &format!("connections/{}/auth_json", record.id))?, now, serde_json::to_string(&record.options)?,
+                self.encrypt(&record.auth_json, &format!("connections/{}/auth_json", record.id))?, now, serde_json::to_string(&record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
             ])?;
         }
         tx.commit()?;

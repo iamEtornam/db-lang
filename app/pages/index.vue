@@ -4,14 +4,15 @@ import { toast } from 'vue-sonner'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import ResultsTable from '~/components/results/ResultsTable.vue'
 import { Textarea } from '~/components/ui/textarea'
-import { Separator } from '~/components/ui/separator'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '~/components/ui/dialog'
 import { useConnectionsStore } from '~/stores/connections'
 import { useHistoryStore } from '~/stores/history'
 import { queryForExecution } from '~/lib/queryWorkspace'
 import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { QueryResult } from '~/types/query'
+import QueryPlanDialog from '~/components/query/QueryPlanDialog.vue'
 
 useHead({ title: 'Query' })
 
@@ -341,11 +342,7 @@ function onEnterKey(e: KeyboardEvent) {
 }
 
 
-function formatCellValue(val: unknown): string {
-  if (val === null || val === undefined) return ''
-  if (typeof val === 'object') return JSON.stringify(val)
-  return String(val)
-}
+
 
 const router = useRouter()
 function goToSettings() {
@@ -443,6 +440,22 @@ function goToSettings() {
           :disabled="!activeConnection || isExecuting || isTranslating"
           @execute="executeQuery(1, $event)"
         />
+
+        <div class="flex items-center gap-2">
+          <Button
+            :disabled="!generatedQuery.trim() || isExecuting"
+            class="gap-1.5"
+            @click="executeQuery()"
+          >
+            <Icon v-if="isExecuting" name="lucide:loader-2" class="size-4 animate-spin" />
+            <Icon v-else name="lucide:play" class="size-4" />
+            Re-run
+            <kbd class="hidden sm:inline-flex ml-1 pointer-events-none h-5 select-none items-center gap-1 rounded border border-primary-foreground/30 bg-primary-foreground/20 px-1.5 font-mono text-[10px] text-primary-foreground/80">
+              ⌘↵
+            </kbd>
+          </Button>
+          <QueryPlanDialog v-if="activeConnection" :connection-id="activeConnection.id" :engine="activeConnection.db_type" :query="generatedQuery" />
+        </div>
         <p v-if="storageError" role="alert" class="text-sm text-destructive">{{ storageError }}</p>
       </div>
 
@@ -503,81 +516,11 @@ function goToSettings() {
         </TabsList>
 
         <TabsContent value="table" class="flex-1 overflow-hidden mt-2">
-          <div v-if="isExecuting && !queryResult" class="flex flex-col gap-2 p-4">
-            <div v-for="i in 5" :key="i" class="h-10 bg-muted/50 rounded animate-pulse" />
-          </div>
-
-          <div v-else-if="queryResult && queryResult.rows.length > 0" class="flex flex-col h-full overflow-hidden rounded-md border border-border">
-            <div class="flex items-center gap-3 px-3 py-2 border-b border-border text-sm text-muted-foreground shrink-0">
-              <span>{{ queryResult.total_count?.toLocaleString() ?? queryResult.rows.length }} rows</span>
-              <Separator orientation="vertical" class="h-4" />
-              <span>{{ queryResult.columns.length }} columns</span>
-              <Separator orientation="vertical" class="h-4" />
-              <Badge variant="outline" class="text-xs">{{ queryResult.execution_time_ms }}ms</Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                class="ml-auto h-7 px-2 text-xs gap-1.5"
-                @click="explainResultFromTable"
-              >
-                <Icon name="lucide:sparkles" class="size-3.5 text-primary" />
-                Explain result
-              </Button>
-            </div>
-
-            <div class="overflow-auto flex-1">
-              <table class="w-full text-sm">
-                <thead class="sticky top-0 bg-muted/90 backdrop-blur-sm">
-                  <tr class="border-b border-border">
-                    <th
-                      v-for="col in queryResult.columns"
-                      :key="col"
-                      class="px-3 py-2 text-left text-xs font-medium text-muted-foreground whitespace-nowrap"
-                    >
-                      {{ col }}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border">
-                  <tr
-                    v-for="(row, ri) in queryResult.rows"
-                    :key="ri"
-                    class="hover:bg-muted/30 transition-colors"
-                  >
-                    <td
-                      v-for="col in queryResult.columns"
-                      :key="col"
-                      class="px-3 py-1.5 whitespace-nowrap max-w-[300px] truncate"
-                    >
-                      <template v-if="row[col] === null">
-                        <span class="text-muted-foreground italic text-xs">null</span>
-                      </template>
-                      <template v-else>
-                        {{ formatCellValue(row[col]) }}
-                      </template>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div v-if="queryResult.has_more || queryResult.page > 1" class="flex items-center justify-between border-t border-border px-3 py-2 text-sm text-muted-foreground shrink-0">
-              <span>Page {{ queryResult.page }}</span>
-              <div class="flex gap-1">
-                <Button variant="ghost" size="sm" class="h-7" :disabled="queryResult.page <= 1" @click="executeQuery(queryResult.page - 1)">
-                  <Icon name="lucide:chevron-left" class="size-4" />
-                </Button>
-                <Button variant="ghost" size="sm" class="h-7" :disabled="!queryResult.has_more" @click="executeQuery(queryResult.page + 1)">
-                  <Icon name="lucide:chevron-right" class="size-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div v-else-if="queryResult && queryResult.rows.length === 0" class="flex flex-col items-center justify-center flex-1 py-12 text-muted-foreground">
-            <Icon name="lucide:table" class="size-8 mb-3" />
-            <p class="text-sm">Query returned no results</p>
-          </div>
+          <ResultsTable :result="queryResult" :is-loading="isExecuting" @load-page="executeQuery">
+            <template v-if="queryResult?.rows.length" #actions>
+              <Button size="sm" variant="ghost" class="h-8" @click="explainResultFromTable">Explain result</Button>
+            </template>
+          </ResultsTable>
         </TabsContent>
 
         <!-- Chart tab -->
