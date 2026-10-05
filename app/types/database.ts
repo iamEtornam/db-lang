@@ -52,6 +52,26 @@ export interface TableSchema {
   columns: ColumnInfo[]
 }
 
+export interface DiagramTable extends TableInfo {
+  columns: ColumnInfo[]
+  columns_error: string | null
+}
+
+export interface ForeignKey {
+  source_schema: string | null
+  target_schema: string | null
+  source_table: string
+  source_column: string
+  target_table: string
+  target_column: string
+  relationship_type: string | null
+}
+
+export interface ErSchema {
+  tables: DiagramTable[]
+  relationships: ForeignKey[]
+}
+
 export interface PaginatedResult {
   data: string
   total_count: number | null

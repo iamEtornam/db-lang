@@ -14,6 +14,7 @@
 
 ## ✨ Features
 
+- **ER diagrams**: Explore declared foreign keys in PostgreSQL, MySQL, MariaDB, and SQLite. Pan, zoom, move tables, find a table, or read the column-level link list. Schema-qualified names distinguish tables; inaccessible columns and references outside the loaded schema remain visible. This view reads metadata and never changes the database.
 - **🗣️ AI-Powered Query Generation**: Leveraging Google's **Gemini Pro**, describe your data needs (e.g., *"Find all users who signed up last week and spent over $500"*), and Query Studio instantly crafts the precise SQL.
 - **🔌 Multi-Database Support**: Connect effortlessly to **PostgreSQL**, **MySQL**, **SQLite**, **MongoDB**, **Redis**, **Firebase Firestore**, and **Firebase Realtime Database**.
 - **🧠 Logic Breakdown**: Don't just copy-paste code. Query Studio provides a step-by-step plain-English explanation of the generated SQL logic.

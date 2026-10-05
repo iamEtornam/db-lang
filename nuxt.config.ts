@@ -103,6 +103,7 @@ export default defineNuxtConfig({
         // Charts page nav entry — referenced from menus.ts (a .ts file the
         // icon scanner skips), so it must be listed explicitly.
         'lucide:bar-chart-3',
+        'lucide:network',
         'lucide:scroll-text',
         'lucide:play',
         'lucide:lock',
