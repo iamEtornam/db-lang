@@ -1,4 +1,5 @@
 mod app_db;
+mod credential_vault;
 mod commands;
 mod connection_pool;
 mod database;
@@ -926,6 +927,42 @@ async fn test_connection_by_id(connection_id: &str) -> Result<bool, String> {
     driver.test_connection().await.map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct DiagramTable {
+    #[serde(flatten)]
+    table: TableInfo,
+    columns: Vec<ColumnInfo>,
+    columns_error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ErSchema {
+    tables: Vec<DiagramTable>,
+    relationships: Vec<drivers::Relationship>,
+}
+
+#[tauri::command]
+async fn get_er_schema(connection_id: &str) -> Result<ErSchema, String> {
+    use futures::StreamExt;
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    if !["postgres", "mysql", "mariadb", "sqlite"].contains(&engine.as_str()) {
+        return Err("ER diagrams require SQL foreign-key metadata (PostgreSQL, MySQL, MariaDB, or SQLite)".into());
+    }
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let tables = driver.get_tables().await.map_err(|e| e.to_string())?;
+    let relationships = driver.get_relationships().await.map_err(|e| e.to_string())?;
+    let tables = futures::stream::iter(tables.into_iter().map(|table| {
+        let driver = &driver;
+        async move {
+            match driver.get_table_columns(&table.name, table.schema.as_deref()).await {
+                Ok(columns) => DiagramTable { table, columns, columns_error: None },
+                Err(error) => DiagramTable { table, columns: Vec::new(), columns_error: Some(error.to_string()) },
+            }
+        }
+    })).buffered(8).collect().await;
+    Ok(ErSchema { tables, relationships })
+}
+
 #[tauri::command]
 async fn get_tables(connection_id: &str) -> Result<Vec<TableInfo>, String> {
     let (engine, conn_str) = resolve_connection(connection_id)?;
@@ -1289,6 +1326,7 @@ pub fn run() {
             test_connection_by_id,
             // Schema exploration
             get_tables,
+            get_er_schema,
             get_table_columns,
             preview_table_data,
             // AI translation & explanation
@@ -1314,8 +1352,15 @@ pub fn run() {
             get_schema_kb,
             refresh_schema_kb,
             update_table_description,
+            app_db::credential_storage_status,
+            app_db::retry_credential_storage,
+            commands::export_connection_profiles,
+            commands::import_connection_profiles,
             // Connection management
             commands::save_connection,
+            commands::test_connection_draft,
+            commands::list_gemini_models,
+            commands::list_ollama_models,
             commands::update_connection,
             commands::get_connections,
             commands::delete_connection_record,

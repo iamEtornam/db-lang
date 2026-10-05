@@ -79,6 +79,10 @@ pub struct ColumnInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
+    #[serde(default)]
+    pub source_schema: Option<String>,
+    #[serde(default)]
+    pub target_schema: Option<String>,
     pub source_table: String,
     pub source_column: String,
     pub target_table: String,
