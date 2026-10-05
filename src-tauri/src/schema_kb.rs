@@ -2,7 +2,7 @@ use crate::app_db::{
     get_app_database, RelationshipDescriptionRecord, SchemaSnapshot,
     TableDescriptionRecord,
 };
-use crate::drivers::{create_driver, ColumnInfo};
+use crate::drivers::{create_driver_with_policy, ColumnInfo};
 use crate::gemini::call_llm_api_pub;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -54,6 +54,8 @@ pub async fn generate_schema_kb(
     connection_id: &str,
     engine: &str,
     conn_str: &str,
+    read_only: bool,
+    tunneled: bool,
     app: &tauri::AppHandle,
 ) -> Result<String, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
@@ -78,7 +80,7 @@ pub async fn generate_schema_kb(
         .map_err(|e| e.to_string())?;
 
     // Connect to target DB
-    let driver = create_driver(engine, conn_str)
+    let driver = create_driver_with_policy(engine, conn_str, read_only, tunneled)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -199,9 +201,11 @@ pub async fn refresh_schema_kb(
     connection_id: &str,
     engine: &str,
     conn_str: &str,
+    read_only: bool,
+    tunneled: bool,
     app: &tauri::AppHandle,
 ) -> Result<String, String> {
-    generate_schema_kb(connection_id, engine, conn_str, app).await
+    generate_schema_kb(connection_id, engine, conn_str, read_only, tunneled, app).await
 }
 
 pub fn update_table_description(table_desc_id: &str, description: &str) -> Result<(), String> {

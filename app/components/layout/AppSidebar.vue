@@ -25,6 +25,16 @@ const { connections, activeConnection } = storeToRefs(connectionsStore)
 const route = useRoute()
 const router = useRouter()
 
+const connectionGroups = computed(() => {
+  const groups = new Map<string, Connection[]>()
+  for (const connection of connections.value) {
+    const name = connection.options?.group.trim() || 'Ungrouped'
+    if (!groups.has(name)) groups.set(name, [])
+    groups.get(name)!.push(connection)
+  }
+  return [...groups].sort(([left], [right]) => left.localeCompare(right)).map(([name, items]) => ({ name, items }))
+})
+
 const connectionStatuses = ref<Record<string, 'connected' | 'connecting' | 'error' | 'idle'>>({})
 
 const showNewConnectionDialog = ref(false)
@@ -93,10 +103,11 @@ async function selectConnection(conn: Connection) {
   }
 }
 
-function disconnectConnection(connId: string) {
+async function disconnectConnection(connId: string) {
+  try { await invoke('disconnect_ssh_tunnel', { connectionId: connId }) } catch (error) { toast.error('Could not close SSH tunnel', { description: String(error) }); return }
   connectionStatuses.value[connId] = 'idle'
-  connectionsStore.clearSchema()
   if (activeConnection.value?.id === connId) {
+    connectionsStore.clearSchema()
     connectionsStore.setActiveConnection('')
   }
   toast.info('Disconnected')
@@ -173,18 +184,20 @@ async function deleteConnection(e: Event, connId: string) {
         </SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
+            <template v-for="connectionGroup in connectionGroups" :key="connectionGroup.name">
+              <li class="px-2 pt-3 pb-1 text-xs text-muted-foreground" role="presentation">{{ connectionGroup.name }}</li>
             <SidebarMenuItem
-              v-for="conn in connections"
+              v-for="conn in connectionGroup.items"
               :key="conn.id"
             >
               <SidebarMenuButton
                 :is-active="activeConnection?.id === conn.id"
                 :tooltip="`${conn.name} (${conn.db_type})`"
-                class="group"
+                class="group h-auto min-h-8"
                 @click="selectConnection(conn)"
               >
                 <Icon :name="getEngineIcon(conn.db_type)" class="size-4 shrink-0" />
-                <span class="truncate">{{ conn.name }}</span>
+                <span class="min-w-0 truncate"><span class="block truncate">{{ conn.name }}</span><span v-if="conn.options?.environment || conn.options?.read_only" class="block text-xs text-muted-foreground truncate">{{ [conn.options?.environment, conn.options?.read_only ? 'Read-only' : ''].filter(Boolean).join(' · ') }}</span></span>
                 <div class="ml-auto flex items-center gap-1.5 shrink-0">
                   <button
                     v-if="connectionStatuses[conn.id] === 'connected'"
@@ -218,6 +231,7 @@ async function deleteConnection(e: Event, connId: string) {
               </SidebarMenuButton>
             </SidebarMenuItem>
 
+            </template>
             <SidebarMenuItem v-if="connections.length === 0">
               <SidebarMenuButton
                 class="text-muted-foreground"

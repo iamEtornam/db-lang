@@ -12,7 +12,10 @@ pub struct SqliteDriver {
 
 impl SqliteDriver {
     pub fn new(path: &str) -> Result<Self, DriverError> {
-        let conn = rusqlite::Connection::open(path)
+        Self::new_with_policy(path, false)
+    }
+    pub fn new_with_policy(path: &str, read_only: bool) -> Result<Self, DriverError> {
+        let conn = if read_only { rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) } else { rusqlite::Connection::open(path) }
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
@@ -227,6 +230,23 @@ impl DatabaseDriver for SqliteDriver {
 
 fn escape_sqlite_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+    #[tokio::test]
+    async fn readonly_file_blocks_writes_and_preserves_data() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("readonly-{}.db", uuid::Uuid::new_v4()));
+        let writable = SqliteDriver::new(path.to_str().unwrap()).unwrap();
+        writable.execute_statement("CREATE TABLE fixture (value INTEGER)").await.unwrap();
+        writable.execute_statement("INSERT INTO fixture VALUES (7)").await.unwrap();
+        let readonly = SqliteDriver::new_with_policy(path.to_str().unwrap(), true).unwrap();
+        assert_eq!(readonly.execute_query("SELECT value FROM fixture").await.unwrap()[0]["value"], 7);
+        assert!(readonly.execute_statement("UPDATE fixture SET value = 9").await.is_err());
+        assert_eq!(writable.execute_query("SELECT value FROM fixture").await.unwrap()[0]["value"], 7);
+        drop(readonly); drop(writable); std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[cfg(test)]
