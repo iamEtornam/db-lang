@@ -1,0 +1,12 @@
+{
+  "updated_at": "2026-10-05",
+  "providers": [
+    { "id": "gemini", "name": "Google Gemini", "models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview"] },
+    { "id": "openai", "name": "OpenAI", "models": ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"] },
+    { "id": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5"] },
+    { "id": "ollama", "name": "Ollama (Local)", "models": ["qwen3.5:4b", "qwen3.8", "gemma4:e4b", "qwen3-coder", "gpt-oss"] },
+    { "id": "deepseek", "name": "DeepSeek", "models": ["deepseek-flash", "deepseek-v4-pro"] },
+    { "id": "groq", "name": "Groq", "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"] },
+    { "id": "custom", "name": "Custom (OpenAI-compatible)", "models": [] }
+  ]
+}
