@@ -117,3 +117,4 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 ## 📄 License
 
 This project is open-source and available under the [MIT License](LICENSE).
+- Compare SQL column schemas and copy conservative migration drafts: [Schema comparison](docs/schema-comparison.md).

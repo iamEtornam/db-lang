@@ -11,6 +11,7 @@ mod drivers;
 mod export;
 mod gemini;
 mod schema_kb;
+mod schema_diff;
 mod scripts;
 mod query_plan;
 
@@ -1378,6 +1379,7 @@ pub fn run() {
             disconnect_ssh_tunnel,
             // Schema exploration
             get_tables,
+            schema_diff::get_comparison_schema,
             get_er_schema,
             get_table_columns,
             preview_table_data,
