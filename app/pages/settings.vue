@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConnectionBackup from '~/components/connection/ConnectionBackup.vue'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'vue-sonner'
 import { Button } from '~/components/ui/button'
@@ -58,7 +59,9 @@ const llmConfig = ref<LlmConfig>({
   updated_at: '',
 })
 
-const isTesting = ref(false)
+const clearApiKey = ref(false)
+const savedProvider = ref('')
+const keepsApiKey = computed(() => !!llmConfig.value.has_api_key && savedProvider.value === llmConfig.value.provider && !clearApiKey.value)
 const isSaving = ref(false)
 
 const providers = [
@@ -173,65 +176,31 @@ async function fetchOllamaModels() {
   isFetchingOllamaModels.value = true
 
   try {
-    const response = await fetch(`${baseUrl}/api/tags`)
-    if (response.ok) {
-      const data = await response.json()
-      const models = (data.models ?? []).map((m: { name: string }) => m.name)
-      ollamaModels.value = models
-      if (models.length > 0 && !models.includes(llmConfig.value.model)) {
-        llmConfig.value.model = models[0]
-      }
-      toast.success(`Found ${models.length} local models`)
-    }
+    const models = await invoke<string[]>('list_ollama_models', { apiUrl: baseUrl })
+    ollamaModels.value = models
+    if (models.length > 0 && !models.includes(llmConfig.value.model)) llmConfig.value.model = models[0]!
+    toast.success(`Found ${models.length} local models`)
   }
-  catch {
+  catch (err) {
     ollamaModels.value = []
-    toast.error('Could not reach Ollama', { description: `Make sure Ollama is running at ${baseUrl}` })
+    toast.error('Could not fetch Ollama models', { description: String(err) })
   }
   finally {
     isFetchingOllamaModels.value = false
   }
 }
 
-/** Fetch the current Gemini model catalog via the ListModels REST endpoint,
- *  keeping only models that support `generateContent` (the method the app
- *  uses for translation — this filters out embedding / aqa models). The API
- *  key is passed as a query param, which is how the Gemini API authenticates;
- *  the host is already whitelisted in the CSP connect-src. */
+// Saved keys are resolved in Rust. Only a newly typed key crosses into Rust.
 async function fetchGeminiModels() {
-  const apiKey = llmConfig.value.api_key?.trim()
-  if (!apiKey) {
+  if (!llmConfig.value.api_key.trim() && !keepsApiKey.value) {
     toast.error('Enter your Gemini API key first')
     return
   }
   isFetchingGeminiModels.value = true
-
   try {
-    // pageSize=1000 returns the whole catalog in one page (Gemini exposes far
-    // fewer than that), so we don't need to follow nextPageToken.
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${encodeURIComponent(apiKey)}`,
-    )
-    if (!response.ok) {
-      let detail = `HTTP ${response.status}`
-      try {
-        const errBody = await response.json()
-        detail = errBody?.error?.message ?? detail
-      }
-      catch { /* response wasn't JSON — keep the status code */ }
-      throw new Error(detail)
-    }
-    const data = await response.json()
-    // Defensive: the body could be null, a non-object, or missing `models`
-    // entirely if the API returns an unexpected payload. Guard before iterating.
-    const rawModels: Array<{ name?: string; supportedGenerationMethods?: string[] }>
-      = Array.isArray(data?.models) ? data.models : []
-    const models: string[] = rawModels
-      .filter(m => m?.supportedGenerationMethods?.includes('generateContent'))
-      // Names come back as "models/gemini-2.5-pro"; strip the prefix.
-      .map(m => m.name?.replace(/^models\//, '') ?? '')
-      .filter(Boolean)
-
+    const models = await invoke<string[]>('list_gemini_models', {
+      apiKey: llmConfig.value.api_key.trim() || null,
+    })
     geminiModels.value = models
     if (models.length === 0) {
       toast.error('No Gemini models support generateContent for this key')
@@ -257,10 +226,11 @@ async function fetchGeminiModels() {
 onMounted(async () => {
   try {
     llmConfig.value = await invoke<LlmConfig>('get_llm_config')
+    savedProvider.value = llmConfig.value.provider
     if (llmConfig.value.provider === 'ollama') {
       fetchOllamaModels()
     }
-    else if (llmConfig.value.provider === 'gemini' && llmConfig.value.api_key) {
+    else if (llmConfig.value.provider === 'gemini' && keepsApiKey.value) {
       fetchGeminiModels()
     }
   }
@@ -270,20 +240,22 @@ onMounted(async () => {
 })
 
 watch(() => llmConfig.value.provider, (provider) => {
+  llmConfig.value.api_key = ''
+  clearApiKey.value = false
   ollamaModels.value = []
   geminiModels.value = []
   if (provider === 'ollama') {
     fetchOllamaModels()
     return
   }
-  if (provider === 'gemini' && llmConfig.value.api_key) {
+  if (provider === 'gemini' && (llmConfig.value.api_key || keepsApiKey.value)) {
     // Refresh the live list on switch; fetchGeminiModels picks the model.
     fetchGeminiModels()
     return
   }
   const p = providers.find(pr => pr.id === provider)
   if (p?.models.length) {
-    llmConfig.value.model = p.models[0]
+    llmConfig.value.model = p.models[0]!
   }
 })
 
@@ -308,14 +280,17 @@ async function saveConfig() {
   isSaving.value = true
 
   try {
-    await invoke('update_llm_config', {
+    llmConfig.value = await invoke<LlmConfig>('update_llm_config', {
       config: {
         provider: llmConfig.value.provider,
         model: llmConfig.value.model,
         api_key: llmConfig.value.api_key,
         api_url: llmConfig.value.api_url,
+        clear_api_key: clearApiKey.value,
       },
     })
+    savedProvider.value = llmConfig.value.provider
+    clearApiKey.value = false
     toast.success('Settings saved')
   }
   catch (err) {
@@ -374,8 +349,8 @@ async function saveConfig() {
             size="sm"
             variant="ghost"
             class="h-6 px-2 text-xs gap-1"
-            :disabled="isFetchingGeminiModels || !llmConfig.api_key"
-            :title="!llmConfig.api_key ? 'Enter your API key first' : 'Fetch the latest models from Google'"
+            :disabled="isFetchingGeminiModels || (!llmConfig.api_key && !keepsApiKey)"
+            :title="(!llmConfig.api_key && !keepsApiKey) ? 'Enter your API key first' : 'Fetch the latest models from Google'"
             @click="fetchGeminiModels"
           >
             <Icon v-if="isFetchingGeminiModels" name="lucide:loader-2" class="size-3 animate-spin" />
@@ -405,18 +380,25 @@ async function saveConfig() {
         <Input
           v-model="llmConfig.api_key"
           type="password"
-          :placeholder="llmConfig.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'"
-          :disabled="llmConfig.provider === 'ollama'"
+          :placeholder="keepsApiKey ? 'Saved key, leave blank to keep' : llmConfig.provider === 'ollama' ? 'Not required for Ollama' : 'Enter API key'"
+          autocomplete="new-password"
+          :disabled="llmConfig.provider === 'ollama' || clearApiKey"
         />
         <p class="text-xs text-muted-foreground">
-          Your API key is stored locally and never sent anywhere except to the AI provider.
+          Saved keys are encrypted using your OS credential store and used only by the Rust backend.
         </p>
       </div>
+
+      <label v-if="llmConfig.has_api_key && savedProvider === llmConfig.provider" class="flex items-center gap-2 text-sm">
+        <input v-model="clearApiKey" type="checkbox" />
+        Remove saved API key
+      </label>
 
       <div v-if="showApiUrl" class="space-y-2">
         <Label>API URL</Label>
         <Input
-          v-model="llmConfig.api_url"
+          :model-value="llmConfig.api_url ?? ''"
+          @update:model-value="llmConfig.api_url = String($event)"
           :placeholder="llmConfig.provider === 'ollama' ? 'http://localhost:11434' : 'https://your-api.com/v1'"
         />
       </div>
@@ -462,6 +444,8 @@ async function saveConfig() {
     </div>
 
     <Separator />
+
+    <ConnectionBackup />
 
     <!-- Updates -->
     <div class="space-y-3">
