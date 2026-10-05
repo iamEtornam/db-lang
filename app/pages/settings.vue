@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { providers, defaultModel, modelChoices, geminiTextModels, catalogUpdatedAt } from '~/lib/llmModels'
 import ConnectionBackup from '~/components/connection/ConnectionBackup.vue'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'vue-sonner'
@@ -52,7 +53,7 @@ async function savePreferences() {
 
 const llmConfig = ref<LlmConfig>({
   provider: 'gemini',
-  model: 'gemini-pro',
+  model: defaultModel('gemini'),
   api_key: '',
   api_url: null,
   created_at: '',
@@ -64,87 +65,9 @@ const savedProvider = ref('')
 const keepsApiKey = computed(() => !!llmConfig.value.has_api_key && savedProvider.value === llmConfig.value.provider && !clearApiKey.value)
 const isSaving = ref(false)
 
-const providers = [
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    models: [
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
-      'gemini-3.1-pro-preview',
-      'gemini-3-flash-preview',
-      'gemini-3.1-flash-lite-preview',
-    ],
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    models: [
-      'gpt-5.4',
-      'gpt-5.4-mini',
-      'gpt-5.4-nano',
-      'gpt-4o',
-      'gpt-4o-mini',
-      'o3-mini',
-    ],
-  },
-  {
-    id: 'anthropic',
-    name: 'Anthropic',
-    models: [
-      'claude-opus-4-6',
-      'claude-sonnet-4-6',
-      'claude-haiku-4-5',
-      'claude-sonnet-4-5',
-      'claude-opus-4-5',
-      'claude-sonnet-4-0',
-    ],
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama (Local)',
-    models: [
-      'qwen3',
-      'qwen3.5',
-      'llama3.3',
-      'llama3.1',
-      'deepseek-r1',
-      'gemma3',
-      'gemma4',
-      'mistral',
-      'mistral-small',
-      'qwen2.5-coder',
-      'qwen3-coder',
-      'codellama',
-      'phi4',
-      'gpt-oss',
-    ],
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
-  },
-  {
-    id: 'groq',
-    name: 'Groq',
-    models: [
-      'openai/gpt-oss-120b',
-      'openai/gpt-oss-20b',
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'qwen/qwen3-32b',
-      'meta-llama/llama-4-scout-17b-16e-instruct',
-    ],
-  },
-  {
-    id: 'custom',
-    name: 'Custom (OpenAI-compatible)',
-    models: [],
-  },
-]
-
+let ollamaRequest = 0
+let geminiRequest = 0
+onBeforeUnmount(() => { ++ollamaRequest; ++geminiRequest })
 const ollamaModels = ref<string[]>([])
 const isFetchingOllamaModels = ref(false)
 
@@ -158,13 +81,14 @@ const currentProvider = computed(() =>
 )
 
 const availableModels = computed(() => {
+  let suggestions = currentProvider.value?.models ?? []
   if (llmConfig.value.provider === 'ollama' && ollamaModels.value.length > 0) {
-    return ollamaModels.value
+    suggestions = ollamaModels.value
   }
   if (llmConfig.value.provider === 'gemini' && geminiModels.value.length > 0) {
-    return geminiModels.value
+    suggestions = geminiModels.value
   }
-  return currentProvider.value?.models ?? []
+  return modelChoices(suggestions, llmConfig.value.model)
 })
 
 const showApiUrl = computed(() =>
@@ -172,21 +96,24 @@ const showApiUrl = computed(() =>
 )
 
 async function fetchOllamaModels() {
+  const request = ++ollamaRequest
   const baseUrl = llmConfig.value.api_url || 'http://localhost:11434'
+  const provider = llmConfig.value.provider
   isFetchingOllamaModels.value = true
 
   try {
     const models = await invoke<string[]>('list_ollama_models', { apiUrl: baseUrl })
+    if (request !== ollamaRequest || llmConfig.value.provider !== provider || (llmConfig.value.api_url || 'http://localhost:11434') !== baseUrl) return
     ollamaModels.value = models
-    if (models.length > 0 && !models.includes(llmConfig.value.model)) llmConfig.value.model = models[0]!
     toast.success(`Found ${models.length} local models`)
   }
   catch (err) {
+    if (request !== ollamaRequest || llmConfig.value.provider !== provider || (llmConfig.value.api_url || 'http://localhost:11434') !== baseUrl) return
     ollamaModels.value = []
     toast.error('Could not fetch Ollama models', { description: String(err) })
   }
   finally {
-    isFetchingOllamaModels.value = false
+    if (request === ollamaRequest) isFetchingOllamaModels.value = false
   }
 }
 
@@ -196,36 +123,41 @@ async function fetchGeminiModels() {
     toast.error('Enter your Gemini API key first')
     return
   }
+  const apiKey = llmConfig.value.api_key.trim()
+  const keepSavedKey = keepsApiKey.value
+  const request = ++geminiRequest
   isFetchingGeminiModels.value = true
   try {
-    const models = await invoke<string[]>('list_gemini_models', {
-      apiKey: llmConfig.value.api_key.trim() || null,
-    })
+    const models = geminiTextModels(await invoke<string[]>('list_gemini_models', { apiKey: apiKey || null }))
+    if (request !== geminiRequest || llmConfig.value.provider !== 'gemini' || llmConfig.value.api_key.trim() !== apiKey || keepsApiKey.value !== keepSavedKey) return
     geminiModels.value = models
     if (models.length === 0) {
       toast.error('No Gemini models support generateContent for this key')
       return
     }
-    // Only override the selection if the saved model isn't in the live list.
-    if (!models.includes(llmConfig.value.model)) {
-      llmConfig.value.model = models[0]!
-    }
     toast.success(`Found ${models.length} Gemini models`)
   }
   catch (err) {
+    if (request !== geminiRequest || llmConfig.value.provider !== 'gemini' || llmConfig.value.api_key.trim() !== apiKey || keepsApiKey.value !== keepSavedKey) return
     geminiModels.value = []
     toast.error('Could not fetch Gemini models', {
       description: err instanceof Error ? err.message : String(err),
     })
   }
   finally {
-    isFetchingGeminiModels.value = false
+    if (request === geminiRequest) isFetchingGeminiModels.value = false
   }
 }
 
+watch(() => llmConfig.value.api_url, () => {
+  ++ollamaRequest; ollamaModels.value = []; isFetchingOllamaModels.value = false
+}, { flush: 'sync' })
+const loadingConfig = ref(true)
 onMounted(async () => {
   try {
     llmConfig.value = await invoke<LlmConfig>('get_llm_config')
+    await nextTick()
+    loadingConfig.value = false
     savedProvider.value = llmConfig.value.provider
     if (llmConfig.value.provider === 'ollama') {
       fetchOllamaModels()
@@ -237,10 +169,15 @@ onMounted(async () => {
   catch (err) {
     console.error('Failed to load LLM config:', err)
   }
+  finally { loadingConfig.value = false }
 })
 
 watch(() => llmConfig.value.provider, (provider) => {
-  llmConfig.value.api_key = ''
+  if (loadingConfig.value) return
+  ++ollamaRequest; ++geminiRequest
+  isFetchingOllamaModels.value = false; isFetchingGeminiModels.value = false
+  llmConfig.value.model = defaultModel(provider)
+  llmConfig.value.api_key = ''; llmConfig.value.api_url = null
   clearApiKey.value = false
   ollamaModels.value = []
   geminiModels.value = []
@@ -248,15 +185,8 @@ watch(() => llmConfig.value.provider, (provider) => {
     fetchOllamaModels()
     return
   }
-  if (provider === 'gemini' && (llmConfig.value.api_key || keepsApiKey.value)) {
-    // Refresh the live list on switch; fetchGeminiModels picks the model.
-    fetchGeminiModels()
-    return
-  }
-  const p = providers.find(pr => pr.id === provider)
-  if (p?.models.length) {
-    llmConfig.value.model = p.models[0]!
-  }
+  // Gemini refresh is explicit after a provider switch: the current key may belong to another provider.
+
 })
 
 const {
@@ -316,9 +246,9 @@ async function saveConfig() {
       <h2 class="text-sm font-semibold">AI Model</h2>
 
       <div class="space-y-2">
-        <Label>Provider</Label>
-        <Select v-model="llmConfig.provider">
-          <SelectTrigger>
+        <Label for="llm-provider">Provider</Label>
+        <Select v-model="llmConfig.provider" :disabled="loadingConfig">
+          <SelectTrigger id="llm-provider">
             <SelectValue placeholder="Select provider" />
           </SelectTrigger>
           <SelectContent>
@@ -331,13 +261,13 @@ async function saveConfig() {
 
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <Label>Model</Label>
+          <Label for="suggested-model">Suggested model</Label>
           <Button
             v-if="llmConfig.provider === 'ollama'"
             size="sm"
             variant="ghost"
             class="h-6 px-2 text-xs gap-1"
-            :disabled="isFetchingOllamaModels"
+            :disabled="loadingConfig || isFetchingOllamaModels"
             @click="fetchOllamaModels"
           >
             <Icon v-if="isFetchingOllamaModels" name="lucide:loader-2" class="size-3 animate-spin" />
@@ -349,7 +279,7 @@ async function saveConfig() {
             size="sm"
             variant="ghost"
             class="h-6 px-2 text-xs gap-1"
-            :disabled="isFetchingGeminiModels || (!llmConfig.api_key && !keepsApiKey)"
+            :disabled="loadingConfig || isFetchingGeminiModels || (!llmConfig.api_key && !keepsApiKey)"
             :title="(!llmConfig.api_key && !keepsApiKey) ? 'Enter your API key first' : 'Fetch the latest models from Google'"
             @click="fetchGeminiModels"
           >
@@ -358,9 +288,9 @@ async function saveConfig() {
             {{ geminiModels.length > 0 ? `${geminiModels.length} models` : 'Fetch latest' }}
           </Button>
         </div>
-        <template v-if="availableModels.length > 0">
-          <Select v-model="llmConfig.model">
-            <SelectTrigger>
+        <template v-if="availableModels.length > 0 && llmConfig.provider !== 'custom'">
+          <Select v-model="llmConfig.model" :disabled="loadingConfig">
+            <SelectTrigger id="suggested-model">
               <SelectValue placeholder="Select model" />
             </SelectTrigger>
             <SelectContent>
@@ -370,19 +300,21 @@ async function saveConfig() {
             </SelectContent>
           </Select>
         </template>
-        <template v-else>
-          <Input v-model="llmConfig.model" placeholder="e.g. my-custom-model" />
-        </template>
+        <Label for="model-id">Model ID</Label>
+        <Input id="model-id" v-model="llmConfig.model" :disabled="loadingConfig" placeholder="Enter an exact model ID" />
+        <p class="text-xs text-muted-foreground">Suggestions checked {{ catalogUpdatedAt }}. You can enter another supported ID. Saved selections are preserved; fetching models only updates suggestions.</p>
+        <p v-if="llmConfig.provider === 'ollama'" class="text-xs text-muted-foreground">Local suggestions require installation in Ollama. Fetch models to list installed tags.</p>
       </div>
 
       <div class="space-y-2">
-        <Label>API Key</Label>
+        <Label for="llm-key">API Key</Label>
         <Input
+          id="llm-key"
           v-model="llmConfig.api_key"
           type="password"
           :placeholder="keepsApiKey ? 'Saved key, leave blank to keep' : llmConfig.provider === 'ollama' ? 'Not required for Ollama' : 'Enter API key'"
           autocomplete="new-password"
-          :disabled="llmConfig.provider === 'ollama' || clearApiKey"
+          :disabled="loadingConfig || llmConfig.provider === 'ollama' || clearApiKey"
         />
         <p class="text-xs text-muted-foreground">
           Saved keys are encrypted using your OS credential store and used only by the Rust backend.
@@ -390,20 +322,22 @@ async function saveConfig() {
       </div>
 
       <label v-if="llmConfig.has_api_key && savedProvider === llmConfig.provider" class="flex items-center gap-2 text-sm">
-        <input v-model="clearApiKey" type="checkbox" />
+        <input v-model="clearApiKey" type="checkbox" :disabled="loadingConfig" />
         Remove saved API key
       </label>
 
       <div v-if="showApiUrl" class="space-y-2">
-        <Label>API URL</Label>
+        <Label for="llm-url">API URL</Label>
         <Input
+          id="llm-url"
           :model-value="llmConfig.api_url ?? ''"
-          @update:model-value="llmConfig.api_url = String($event)"
+          :disabled="loadingConfig"
+          @update:model-value="llmConfig.api_url = String($event) || null"
           :placeholder="llmConfig.provider === 'ollama' ? 'http://localhost:11434' : 'https://your-api.com/v1'"
         />
       </div>
 
-      <Button :disabled="isSaving" @click="saveConfig">
+      <Button :disabled="isSaving || loadingConfig" @click="saveConfig">
         <Icon v-if="isSaving" name="lucide:loader-2" class="size-4 animate-spin" />
         <Icon v-else name="lucide:save" class="size-4" />
         Save Settings

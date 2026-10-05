@@ -67,7 +67,7 @@ fn get_llm_settings() -> Result<LlmConfig, LlmError> {
             if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
                 Ok(LlmConfig {
                     provider: "gemini".to_string(),
-                    model: "gemini-2.5-flash".to_string(),
+                    model: default_model("gemini"),
                     api_key,
                     api_url: None,
                     created_at: String::new(),
@@ -76,7 +76,7 @@ fn get_llm_settings() -> Result<LlmConfig, LlmError> {
             } else if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
                 Ok(LlmConfig {
                     provider: "openai".to_string(),
-                    model: "gpt-4".to_string(),
+                    model: default_model("openai"),
                     api_key,
                     api_url: None,
                     created_at: String::new(),
@@ -87,6 +87,13 @@ fn get_llm_settings() -> Result<LlmConfig, LlmError> {
             }
         }
     }
+}
+
+/// Shared picker/default catalog, embedded at build time. Existing saved models stay pinned.
+pub fn default_model(provider: &str) -> String {
+    let catalog: serde_json::Value = serde_json::from_str(include_str!("../resources/llm-models.json")).expect("valid embedded model catalog");
+    catalog["providers"].as_array().and_then(|providers| providers.iter().find(|row| row["id"] == provider))
+        .and_then(|row| row["models"][0].as_str()).unwrap_or("").to_string()
 }
 
 /// Build the API URL for a given provider and model.
@@ -154,7 +161,16 @@ fn build_request_body(config: &LlmConfig, prompt: &str) -> serde_json::Value {
                 "parts": [{ "text": prompt }]
             }]
         }),
-        "openai" | "deepseek" | "groq" => json!({
+        "openai" => {
+            let mut body = json!({ "model": config.model, "messages": [
+                { "role": "system", "content": "You are a helpful SQL assistant." },
+                { "role": "user", "content": prompt }
+            ] });
+            // Reasoning model defaults reject sampling parameters; preserve legacy sampling behavior.
+            if !["gpt-5", "gpt-6", "o1", "o3", "o4"].iter().any(|prefix| config.model.starts_with(prefix)) { body["temperature"] = json!(0.2); }
+            body
+        }
+        "deepseek" | "groq" => json!({
             "model": config.model,
             "messages": [
                 { "role": "system", "content": "You are a helpful SQL assistant." },
@@ -214,11 +230,11 @@ fn parse_response_text(config: &LlmConfig, response_json: &serde_json::Value) ->
         "anthropic" => {
             response_json
                 .get("content")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("text"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
-                .ok_or_else(|| LlmError::TranslationFailed("No response from Anthropic".to_string()))
+                .and_then(|c| c.as_array())
+                .map(|blocks| blocks.iter().filter(|block| block["type"] == "text")
+                    .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join(""))
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| LlmError::TranslationFailed("No text response from Anthropic".to_string()))
         }
         "ollama" => {
             response_json
@@ -1261,6 +1277,31 @@ Return only the SQL queries, one per line, no explanations. Include:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_catalog_defaults_and_reasoning_requests_are_compatible() {
+        let catalog: serde_json::Value = serde_json::from_str(include_str!("../resources/llm-models.json")).unwrap();
+        for provider in catalog["providers"].as_array().unwrap() {
+            let id = provider["id"].as_str().unwrap();
+            assert_eq!(default_model(id), provider["models"][0].as_str().unwrap_or(""));
+        }
+        for model in ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.4", "o3-mini", "gpt-4o"] {
+            let config = LlmConfig { provider: "openai".into(), model: model.into(), api_key: String::new(), api_url: None, created_at: String::new(), updated_at: String::new() };
+            let body = build_request_body(&config, "SELECT 1");
+            assert_eq!(body["model"], model);
+            assert_eq!(body["messages"][1]["content"], "SELECT 1");
+            assert_eq!(body.get("temperature").is_some(), model == "gpt-4o");
+            assert_eq!(build_api_url(&config), "https://api.openai.com/v1/chat/completions");
+            assert_eq!(parse_response_text(&config, &json!({"choices":[{"message":{"content":"SELECT 1"}}]})).unwrap(), "SELECT 1");
+        }
+    }
+
+    #[test]
+    fn anthropic_thinking_blocks_are_not_mistaken_for_output() {
+        let config = LlmConfig { provider: "anthropic".into(), model: default_model("anthropic"), api_key: String::new(), api_url: None, created_at: String::new(), updated_at: String::new() };
+        assert_eq!(parse_response_text(&config, &json!({"content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"SELECT "},{"type":"text","text":"1"}]})).unwrap(), "SELECT 1");
+        assert!(parse_response_text(&config, &json!({"content":[{"type":"thinking","thinking":"reasoning only"}]})).is_err());
+    }
 
     /// Reproduces the user's bug: a Firestore connection produced
     /// `SELECT * FROM "Profiles"`. Root cause was that the engine name
