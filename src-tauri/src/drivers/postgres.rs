@@ -269,38 +269,29 @@ impl DatabaseDriver for PostgresDriver {
     async fn get_table_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<ColumnInfo>, DriverError> {
         let schema = schema.unwrap_or("public");
         let query =
-            "SELECT
-                c.column_name as name,
-                c.data_type,
-                (c.is_nullable = 'YES') as is_nullable,
-                c.column_default,
-                COALESCE(pk.is_pk, false) as is_primary_key,
-                COALESCE(fk.is_fk, false) as is_foreign_key,
-                fk.referenced_table,
-                fk.referenced_column
-            FROM information_schema.columns c
-            LEFT JOIN (
-                SELECT kcu.column_name, true as is_pk
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                WHERE tc.table_name = $1 AND tc.table_schema = $2 AND tc.constraint_type = 'PRIMARY KEY'
-            ) pk ON c.column_name = pk.column_name
-            LEFT JOIN (
-                SELECT
-                    kcu.column_name,
-                    true as is_fk,
-                    ccu.table_name as referenced_table,
-                    ccu.column_name as referenced_column
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                JOIN information_schema.constraint_column_usage ccu
-                    ON tc.constraint_name = ccu.constraint_name
-                WHERE tc.table_name = $1 AND tc.table_schema = $2 AND tc.constraint_type = 'FOREIGN KEY'
-            ) fk ON c.column_name = fk.column_name
-            WHERE c.table_name = $1 AND c.table_schema = $2
-            ORDER BY c.ordinal_position";
+            "SELECT c.column_name AS name, c.data_type,
+                    (c.is_nullable = 'YES') AS is_nullable, c.column_default,
+                    EXISTS (SELECT 1 FROM pg_constraint pk
+                            WHERE pk.conrelid = source.oid AND pk.contype = 'p'
+                              AND attribute.attnum = ANY(pk.conkey)) AS is_primary_key,
+                    (fk.referenced_table IS NOT NULL) AS is_foreign_key,
+                    fk.referenced_table, fk.referenced_column
+             FROM information_schema.columns c
+             JOIN pg_namespace ns ON ns.nspname = c.table_schema
+             JOIN pg_class source ON source.relnamespace = ns.oid AND source.relname = c.table_name
+             JOIN pg_attribute attribute ON attribute.attrelid = source.oid AND attribute.attname = c.column_name
+             LEFT JOIN LATERAL (
+                 SELECT target.relname AS referenced_table, target_column.attname AS referenced_column
+                 FROM pg_constraint constraint_row
+                 JOIN pg_class target ON target.oid = constraint_row.confrelid
+                 JOIN pg_attribute target_column ON target_column.attrelid = target.oid
+                     AND target_column.attnum = constraint_row.confkey[array_position(constraint_row.conkey, attribute.attnum)]
+                 WHERE constraint_row.conrelid = source.oid AND constraint_row.contype = 'f'
+                   AND attribute.attnum = ANY(constraint_row.conkey)
+                 ORDER BY constraint_row.oid LIMIT 1
+             ) fk ON true
+             WHERE c.table_name = $1 AND c.table_schema = $2
+             ORDER BY c.ordinal_position";
 
         let rows = self.query_rows_params(query, &[&table, &schema]).await?;
         Ok(rows.iter().map(|row| ColumnInfo {
@@ -317,21 +308,26 @@ impl DatabaseDriver for PostgresDriver {
 
     async fn get_relationships(&self) -> Result<Vec<Relationship>, DriverError> {
         let rows = self.query_rows(
-            "SELECT
-                kcu.table_name as source_table,
-                kcu.column_name as source_column,
-                ccu.table_name as target_table,
-                ccu.column_name as target_column
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-            JOIN information_schema.constraint_column_usage ccu
-                ON tc.constraint_name = ccu.constraint_name
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')"
+            "SELECT source_ns.nspname AS source_schema, source.relname AS source_table,
+                    source_col.attname AS source_column,
+                    target_ns.nspname AS target_schema, target.relname AS target_table,
+                    target_col.attname AS target_column
+             FROM pg_constraint fk
+             JOIN pg_class source ON source.oid = fk.conrelid
+             JOIN pg_namespace source_ns ON source_ns.oid = source.relnamespace
+             JOIN pg_class target ON target.oid = fk.confrelid
+             JOIN pg_namespace target_ns ON target_ns.oid = target.relnamespace
+             CROSS JOIN LATERAL unnest(fk.conkey, fk.confkey) AS cols(source_num, target_num)
+             JOIN pg_attribute source_col ON source_col.attrelid = source.oid AND source_col.attnum = cols.source_num
+             JOIN pg_attribute target_col ON target_col.attrelid = target.oid AND target_col.attnum = cols.target_num
+             WHERE fk.contype = 'f'
+               AND source_ns.nspname NOT IN ('pg_catalog', 'information_schema')
+             ORDER BY source_ns.nspname, source.relname, fk.oid, source_col.attnum"
         ).await?;
 
         Ok(rows.iter().map(|row| Relationship {
+            source_schema: row["source_schema"].as_str().map(str::to_owned),
+            target_schema: row["target_schema"].as_str().map(str::to_owned),
             source_table: row["source_table"].as_str().unwrap_or("").to_string(),
             source_column: row["source_column"].as_str().unwrap_or("").to_string(),
             target_table: row["target_table"].as_str().unwrap_or("").to_string(),

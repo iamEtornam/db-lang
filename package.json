@@ -28,6 +28,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@unovis/ts": "^1.4.3",
     "@unovis/vue": "^1.4.3",
+    "@vue-flow/core": "^1.48.2",
     "@vueuse/core": "^14.2.1",
     "@vueuse/nuxt": "^12.8.0",
     "class-variance-authority": "^0.7.1",
