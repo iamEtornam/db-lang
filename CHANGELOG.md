@@ -7,31 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.8] - 2026-10-05
-
-### Added
-
-- Schema-aware query editing, dialect formatting, selected-query execution, and persistent query tabs (#17).
-- Encrypted local credentials backed by the OS credential store, with encrypted connection backups (#18).
-- Interactive foreign-key ER diagrams (#19) and estimated visual EXPLAIN plans without ANALYZE (#20).
-- Resizable result columns, typed filters, virtualized rows, and full-cell inspection (#21).
-- SSH tunnels, read-only connection policy, groups, and environment labels (#22).
-- Allowlisted read-only CLI queries and MCP stdio tools; the CLI is built from source separately (#23).
-- CSV/XLSX preview and transactional table import, plus bounded local CSV/JSON/Parquet queries with DuckDB (#24).
-- Directional SQL column-schema comparison and conservative additive migration drafts for manual review (#25).
-
-### Changed
-
-- Refresh LLM suggestions and shared defaults across providers, preserve saved model IDs, and allow exact model IDs (#26).
-- Keep model-catalog fetching in Rust, preserve saved keys, and reject stale provider/endpoint responses.
-
-### Fixed
-
-- Preserve read-only and SSH options when importing encrypted backups.
-- Keep draft SSH tests temporary and integrate ER/EXPLAIN metadata with routed saved connections.
-- Let automation read encrypted credentials without migrating the app database or creating an OS key.
-
-
 ### Added
 
 - **Firebase Firestore** engine: connect with a Service Account JSON, browse collections as tables, sample documents to infer schema, and run queries in the compact `collectionName` or `collectionName.{...structuredQuery JSON...}` format. Backed by the Firestore REST API.
@@ -72,3 +47,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SSE stream parser caps its line buffer at 1 MiB and emits an `error` event before closing if the cap is exceeded, preventing unbounded memory growth on malicious or broken streams.
 - SSE parser now uses `String::drain(..pos+2)` instead of slicing + `.to_string()`, removing one allocation per event.
 - Firestore "list all" page size lowered from `1000` to `100`. Users who need more rows can pass `{"limit":N}` in the structured-query JSON tail (e.g. `Profiles.{"limit":500}`).
+
+## [0.0.8] - 2026-10-05
+
+### Added
+
+- Schema-aware query editing, dialect formatting, selected-query execution, and persistent query tabs (#17).
+- Encrypted local credentials backed by the OS credential store, with encrypted connection backups (#18).
+- Interactive foreign-key ER diagrams (#19) and estimated visual EXPLAIN plans without ANALYZE (#20).
+- Resizable result columns, typed filters, virtualized rows, and full-cell inspection (#21).
+- SSH tunnels, read-only connection policy, groups, and environment labels (#22).
+- Allowlisted read-only CLI queries and MCP stdio tools; the CLI is built from source separately (#23).
+- CSV/XLSX preview and transactional table import, plus bounded local CSV/JSON/Parquet queries with DuckDB (#24).
+- Directional SQL column-schema comparison and conservative additive migration drafts for manual review (#25).
+
+### Changed
+
+- Refresh LLM suggestions and shared defaults across providers, preserve saved model IDs, and allow exact model IDs (#26).
+- Keep model-catalog fetching in Rust, preserve saved keys, and reject stale provider/endpoint responses.
+
+### Fixed
+
+- Preserve read-only and SSH options when importing encrypted backups.
+- Keep draft SSH tests temporary and integrate ER/EXPLAIN metadata with routed saved connections.
+- Let automation read encrypted credentials without migrating the app database or creating an OS key.
