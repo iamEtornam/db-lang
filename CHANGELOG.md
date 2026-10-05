@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SSE parser now uses `String::drain(..pos+2)` instead of slicing + `.to_string()`, removing one allocation per event.
 - Firestore "list all" page size lowered from `1000` to `100`. Users who need more rows can pass `{"limit":N}` in the structured-query JSON tail (e.g. `Profiles.{"limit":500}`).
 
+## [0.0.9] - 2026-10-05
+
+### Fixed
+
+- In-app update installation no longer fails with `Cannot read private member from an object whose class did not declare it`. Preserve the original Tauri update resource instead of wrapping it in a Vue Proxy (#28).
+- Added regression coverage using the installed Tauri updater classes for installation/restart, failure without restart, and clearing obsolete update handles.
+
+Existing installed builds need a manual installer to obtain this fix if their in-app updater fails.
+
 ## [0.0.8] - 2026-10-05
 
 ### Added
