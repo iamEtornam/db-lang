@@ -1,6 +1,9 @@
 mod app_db;
 mod commands;
 mod connection_pool;
+mod connection_options;
+mod read_only;
+mod ssh_tunnel;
 mod database;
 mod drivers;
 mod export;
@@ -133,14 +136,44 @@ fn build_connection_string(conn: &DbConnectionRecord) -> Result<String, String> 
 }
 
 /// Look up a saved connection and return (engine, connection_string).
-fn resolve_connection(connection_id: &str) -> Result<(String, String), String> {
+async fn resolve_connection(connection_id: &str) -> Result<(String, String, bool, Option<ssh_tunnel::TunnelLease>), String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
     let connections = db.get_connections().map_err(|e| e.to_string())?;
     let conn = connections
         .iter()
         .find(|c| c.id == connection_id)
         .ok_or_else(|| format!("Connection '{}' not found", connection_id))?;
-    Ok((conn.db_type.clone(), build_connection_string(conn)?))
+    route_connection(conn).await
+}
+
+async fn route_connection(conn: &DbConnectionRecord) -> Result<(String, String, bool, Option<ssh_tunnel::TunnelLease>), String> {
+    conn.options.validate(&conn.db_type, &conn.host, &conn.port)?;
+    let mut routed = conn.clone();
+    let lease = if let Some(config) = &conn.options.ssh {
+        let (port, lease) = ssh_tunnel::connect(&conn.id, config, &conn.host, &conn.port).await?;
+        routed.host = "127.0.0.1".into();
+        routed.port = port.to_string();
+        Some(lease)
+    } else { None };
+    let mut uri = build_connection_string(&routed)?;
+    if lease.is_some() && conn.db_type == "mongodb" { uri.push_str("?directConnection=true"); }
+    Ok((conn.db_type.clone(), uri, conn.options.read_only, lease))
+}
+
+#[tauri::command]
+async fn disconnect_ssh_tunnel(connection_id: &str) -> Result<(), String> { ssh_tunnel::disconnect(connection_id) }
+
+#[tauri::command]
+async fn test_connection_draft(connection: commands::CreateConnectionRequest) -> Result<bool, String> {
+    let conn = DbConnectionRecord {
+        id: String::new(), name: connection.name, db_type: connection.db_type, host: connection.host,
+        port: connection.port, database: connection.database, username: connection.username, password: connection.password,
+        ssl_enabled: connection.ssl_enabled, auth_json: connection.auth_json, options: connection.options,
+        created_at: String::new(), updated_at: String::new(),
+    };
+    let (engine, uri, read_only, _tunnel) = route_connection(&conn).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &uri, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
+    driver.test_connection().await.map_err(|e| e.to_string())
 }
 
 // ============ Database Commands ============
@@ -148,8 +181,9 @@ fn resolve_connection(connection_id: &str) -> Result<(String, String), String> {
 /// Execute a query using a saved connection ID (credentials stay on the backend).
 #[tauri::command]
 async fn query_db(connection_id: &str, query: &str) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { read_only::check_query(&engine, query)?; }
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     let rows = driver.execute_query(query).await.map_err(|e| e.to_string())?;
     serde_json::to_string(&rows).map_err(|e| e.to_string())
 }
@@ -181,14 +215,15 @@ async fn run_script(
         ));
     }
 
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str)
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some())
         .await
         .map_err(|e| e.to_string())?;
 
     let statements = scripts::split_statements(&resolved, &script.query_language);
     let mut all_rows: Vec<serde_json::Value> = Vec::new();
     for stmt in statements {
+        if read_only { read_only::check_query(&engine, &stmt)?; }
         let rows = driver.execute_query(&stmt).await.map_err(|e| e.to_string())?;
         all_rows.extend(rows);
     }
@@ -203,7 +238,8 @@ async fn mongo_insert_one(
     collection: &str,
     doc_json: &str,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "mongodb" {
         return Err(format!("mongo_insert_one requires a mongodb connection; got '{}'", engine));
     }
@@ -226,7 +262,8 @@ async fn mongo_replace_one(
     filter_json: &str,
     replacement_json: &str,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "mongodb" {
         return Err(format!("mongo_replace_one requires a mongodb connection; got '{}'", engine));
     }
@@ -250,7 +287,8 @@ async fn mongo_update_one(
     set_json: &str,
     unset_fields: Vec<String>,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "mongodb" {
         return Err(format!("mongo_update_one requires a mongodb connection; got '{}'", engine));
     }
@@ -272,7 +310,8 @@ async fn mongo_delete_many(
     collection: &str,
     filter_json: &str,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "mongodb" {
         return Err(format!("mongo_delete_many requires a mongodb connection; got '{}'", engine));
     }
@@ -291,7 +330,8 @@ async fn mongo_delete_one(
     collection: &str,
     filter_json: &str,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "mongodb" {
         return Err(format!("mongo_delete_one requires a mongodb connection; got '{}'", engine));
     }
@@ -314,7 +354,7 @@ async fn redis_get_key(
     connection_id: &str,
     key: &str,
 ) -> Result<drivers::redis::RedisKeyView, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
     if engine != "redis" {
         return Err(format!("redis_get_key requires a redis connection; got '{}'", engine));
     }
@@ -343,7 +383,8 @@ async fn redis_set_key(
     value_json: &str,
     ttl_seconds: Option<i64>,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_set_key requires a redis connection; got '{}'", engine));
     }
@@ -437,7 +478,8 @@ async fn redis_hash_patch(
     unset_fields: Vec<String>,
     ttl_seconds: Option<i64>,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_hash_patch requires a redis connection; got '{}'", engine));
     }
@@ -459,7 +501,8 @@ async fn redis_set_patch(
     remove: Vec<String>,
     ttl_seconds: Option<i64>,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_set_patch requires a redis connection; got '{}'", engine));
     }
@@ -482,7 +525,8 @@ async fn redis_zset_patch(
     remove_members: Vec<String>,
     ttl_seconds: Option<i64>,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_zset_patch requires a redis connection; got '{}'", engine));
     }
@@ -506,7 +550,8 @@ async fn redis_list_set_indices(
     changes: Vec<(i64, String)>,
     ttl_seconds: Option<i64>,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_list_set_indices requires a redis connection; got '{}'", engine));
     }
@@ -529,7 +574,8 @@ async fn redis_stream_add(
     fields: std::collections::HashMap<String, String>,
     ttl_seconds: Option<i64>,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_stream_add requires a redis connection; got '{}'", engine));
     }
@@ -550,7 +596,8 @@ async fn redis_stream_delete_entries(
     key: &str,
     entry_ids: Vec<String>,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_stream_delete_entries requires a redis connection; got '{}'", engine));
     }
@@ -568,7 +615,8 @@ async fn redis_stream_delete_entries(
 /// doesn't inflate the count).
 #[tauri::command]
 async fn redis_delete_keys(connection_id: &str, keys: Vec<String>) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_delete_keys requires a redis connection; got '{}'", engine));
     }
@@ -580,7 +628,8 @@ async fn redis_delete_keys(connection_id: &str, keys: Vec<String>) -> Result<u64
 
 #[tauri::command]
 async fn redis_delete_key(connection_id: &str, key: &str) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "redis" {
         return Err(format!("redis_delete_key requires a redis connection; got '{}'", engine));
     }
@@ -595,7 +644,8 @@ async fn redis_delete_key(connection_id: &str, key: &str) -> Result<u64, String>
 /// PUT a JSON value at the given RTDB path. Replaces whatever was there.
 #[tauri::command]
 async fn rtdb_set(connection_id: &str, path: &str, value_json: &str) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firebase_rtdb" {
         return Err(format!("rtdb_set requires a firebase_rtdb connection; got '{}'", engine));
     }
@@ -612,7 +662,8 @@ async fn rtdb_set(connection_id: &str, path: &str, value_json: &str) -> Result<(
 /// key. Returns the generated key.
 #[tauri::command]
 async fn rtdb_push(connection_id: &str, path: &str, value_json: &str) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firebase_rtdb" {
         return Err(format!("rtdb_push requires a firebase_rtdb connection; got '{}'", engine));
     }
@@ -634,7 +685,8 @@ async fn rtdb_patch(
     path: &str,
     partial_json: &str,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firebase_rtdb" {
         return Err(format!("rtdb_patch requires a firebase_rtdb connection; got '{}'", engine));
     }
@@ -657,7 +709,8 @@ async fn rtdb_delete_many(
     parent_path: &str,
     child_keys: Vec<String>,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firebase_rtdb" {
         return Err(format!("rtdb_delete_many requires a firebase_rtdb connection; got '{}'", engine));
     }
@@ -672,7 +725,8 @@ async fn rtdb_delete_many(
 
 #[tauri::command]
 async fn rtdb_delete(connection_id: &str, path: &str) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firebase_rtdb" {
         return Err(format!("rtdb_delete requires a firebase_rtdb connection; got '{}'", engine));
     }
@@ -697,7 +751,8 @@ async fn firestore_create_document(
     doc_id: Option<&str>,
     doc_json: &str,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firestore" {
         return Err(format!("firestore_create_document requires a firestore connection; got '{}'", engine));
     }
@@ -718,7 +773,8 @@ async fn firestore_patch_document(
     doc_id: &str,
     doc_json: &str,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firestore" {
         return Err(format!("firestore_patch_document requires a firestore connection; got '{}'", engine));
     }
@@ -742,7 +798,8 @@ async fn firestore_patch_document_fields(
     field_paths: Vec<String>,
     fields_subset_json: &str,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firestore" {
         return Err(format!("firestore_patch_document_fields requires a firestore connection; got '{}'", engine));
     }
@@ -763,7 +820,7 @@ async fn firestore_list_subcollections(
     connection_id: &str,
     doc_path: &str,
 ) -> Result<Vec<String>, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
     if engine != "firestore" {
         return Err(format!("firestore_list_subcollections requires a firestore connection; got '{}'", engine));
     }
@@ -784,7 +841,8 @@ async fn firestore_delete_many_documents(
     collection: &str,
     doc_ids: Vec<String>,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firestore" {
         return Err(format!("firestore_delete_many_documents requires a firestore connection; got '{}'", engine));
     }
@@ -803,7 +861,8 @@ async fn firestore_delete_document(
     collection: &str,
     doc_id: &str,
 ) -> Result<(), String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     if engine != "firestore" {
         return Err(format!("firestore_delete_document requires a firestore connection; got '{}'", engine));
     }
@@ -823,7 +882,8 @@ async fn execute_sql_batch(
     connection_id: &str,
     statements: Vec<String>,
 ) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     match engine.as_str() {
         "postgres" => {
             let driver = drivers::postgres::PostgresDriver::new(&conn_str)
@@ -835,7 +895,7 @@ async fn execute_sql_batch(
                 .map_err(|e| e.to_string())
         }
         "mysql" | "mariadb" => {
-            let driver = drivers::mysql::MysqlDriver::new(&conn_str)
+            let driver = drivers::mysql::MysqlDriver::new_with_policy(&conn_str, read_only, _tunnel.is_some())
                 .await
                 .map_err(|e| e.to_string())?;
             driver
@@ -863,7 +923,8 @@ async fn execute_sql_batch(
 /// each need their own write paths with different semantics.
 #[tauri::command]
 async fn execute_sql_statement(connection_id: &str, sql: &str) -> Result<u64, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { return Err(read_only::POLICY_ERROR.into()); }
     match engine.as_str() {
         "postgres" => {
             let driver = drivers::postgres::PostgresDriver::new(&conn_str)
@@ -872,7 +933,7 @@ async fn execute_sql_statement(connection_id: &str, sql: &str) -> Result<u64, St
             driver.execute_statement(sql).await.map_err(|e| e.to_string())
         }
         "mysql" | "mariadb" => {
-            let driver = drivers::mysql::MysqlDriver::new(&conn_str)
+            let driver = drivers::mysql::MysqlDriver::new_with_policy(&conn_str, read_only, _tunnel.is_some())
                 .await
                 .map_err(|e| e.to_string())?;
             driver.execute_statement(sql).await.map_err(|e| e.to_string())
@@ -896,8 +957,9 @@ async fn query_db_paginated(
     page: i32,
     page_size: i32,
 ) -> Result<PaginatedResult, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    if read_only { read_only::check_query(&engine, query)?; }
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     driver.execute_query_paginated(query, page, page_size).await.map_err(|e| e.to_string())
 }
 
@@ -911,15 +973,15 @@ async fn test_connection(engine: &str, conn_str: &str) -> Result<bool, String> {
 /// Test connection using a saved connection ID.
 #[tauri::command]
 async fn test_connection_by_id(connection_id: &str) -> Result<bool, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     driver.test_connection().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_tables(connection_id: &str) -> Result<Vec<TableInfo>, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     driver.get_tables().await.map_err(|e| e.to_string())
 }
 
@@ -929,8 +991,8 @@ async fn get_table_columns(
     table_name: &str,
     schema_name: Option<&str>,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     driver.get_table_columns(table_name, schema_name).await.map_err(|e| e.to_string())
 }
 
@@ -941,8 +1003,8 @@ async fn preview_table_data(
     schema_name: Option<&str>,
     limit: Option<i32>,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await.map_err(|e| e.to_string())?;
     let rows = driver
         .preview_table_data(table_name, schema_name, limit.unwrap_or(100))
         .await
@@ -1004,8 +1066,9 @@ async fn run_chart(chart_id: &str) -> Result<String, String> {
         .connection_id
         .ok_or_else(|| "This chart has no connection; pick one to re-run it".to_string())?;
 
-    let (engine, conn_str) = resolve_connection(&connection_id)?;
-    let driver = create_driver(&engine, &conn_str)
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(&connection_id).await?;
+    if read_only { read_only::check_query(&engine, &chart.query)?; }
+    let driver = drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some())
         .await
         .map_err(|e| e.to_string())?;
     let rows = driver
@@ -1056,7 +1119,7 @@ async fn explain_query_result(
     question: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<gemini::ResultExplanation, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
 
     // The result rows arrive as a JSON array string from the frontend.
     let rows: Vec<serde_json::Value> =
@@ -1124,8 +1187,8 @@ async fn generate_schema_kb(
     connection_id: &str,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    schema_kb::generate_schema_kb(connection_id, &engine, &conn_str, &app)
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    schema_kb::generate_schema_kb(connection_id, &engine, &conn_str, read_only, _tunnel.is_some(), &app)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1140,8 +1203,8 @@ async fn refresh_schema_kb(
     connection_id: &str,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
-    schema_kb::refresh_schema_kb(connection_id, &engine, &conn_str, &app)
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
+    schema_kb::refresh_schema_kb(connection_id, &engine, &conn_str, read_only, _tunnel.is_some(), &app)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1185,7 +1248,7 @@ async fn rtdb_subscribe(
     path: &str,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (engine, conn_str, read_only, _tunnel) = resolve_connection(connection_id).await?;
     if engine != "firebase_rtdb" {
         return Err("rtdb_subscribe is only supported for firebase_rtdb connections".into());
     }
@@ -1275,7 +1338,9 @@ pub fn run() {
             redis_delete_key,
             redis_delete_keys,
             test_connection,
+            test_connection_draft,
             test_connection_by_id,
+            disconnect_ssh_tunnel,
             // Schema exploration
             get_tables,
             get_table_columns,
@@ -1345,6 +1410,7 @@ pub fn run() {
             connection_pool::clear_connection_pools,
             connection_pool::cleanup_cache,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_, event| { if matches!(event, tauri::RunEvent::Exit) { ssh_tunnel::close_all(); } });
 }

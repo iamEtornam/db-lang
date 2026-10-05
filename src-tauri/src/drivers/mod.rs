@@ -135,17 +135,21 @@ pub async fn create_driver(
     engine: &str,
     conn_str: &str,
 ) -> Result<Box<dyn DatabaseDriver>, DriverError> {
+    create_driver_with_policy(engine, conn_str, false, false).await
+}
+
+pub async fn create_driver_with_policy(engine: &str, conn_str: &str, read_only: bool, tunneled: bool) -> Result<Box<dyn DatabaseDriver>, DriverError> {
     match engine {
         "postgres" => {
-            let driver = postgres::PostgresDriver::new(conn_str).await?;
+            let driver = postgres::PostgresDriver::new_with_policy(conn_str, read_only).await?;
             Ok(Box::new(driver))
         }
         "mysql" | "mariadb" => {
-            let driver = mysql::MysqlDriver::new(conn_str).await?;
+            let driver = mysql::MysqlDriver::new_with_policy(conn_str, read_only, tunneled).await?;
             Ok(Box::new(driver))
         }
         "sqlite" => {
-            let driver = sqlite::SqliteDriver::new(conn_str)?;
+            let driver = sqlite::SqliteDriver::new_with_policy(conn_str, read_only)?;
             Ok(Box::new(driver))
         }
         "mongodb" => {

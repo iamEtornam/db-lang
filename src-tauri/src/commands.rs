@@ -19,6 +19,8 @@ pub struct CreateConnectionRequest {
     pub password: String,
     pub ssl_enabled: bool,
     #[serde(default)]
+    pub options: crate::connection_options::ConnectionOptions,
+    #[serde(default)]
     pub auth_json: String,
 }
 
@@ -39,6 +41,7 @@ pub async fn save_connection(
         username: connection.username,
         password: connection.password,
         ssl_enabled: connection.ssl_enabled,
+        options: connection.options,
         auth_json: connection.auth_json,
         created_at: now.clone(),
         updated_at: now,
@@ -68,6 +71,8 @@ pub struct UpdateConnectionRequest {
     pub password: String,
     pub ssl_enabled: bool,
     #[serde(default)]
+    pub options: crate::connection_options::ConnectionOptions,
+    #[serde(default)]
     pub auth_json: String,
 }
 
@@ -89,20 +94,23 @@ pub async fn update_connection(connection: UpdateConnectionRequest) -> Result<Db
         username: connection.username,
         password: connection.password,
         ssl_enabled: connection.ssl_enabled,
+        options: connection.options,
         auth_json: connection.auth_json,
         created_at: original.created_at.clone(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
 
     db.update_connection(&conn_record).map_err(|e| e.to_string())?;
+    crate::ssh_tunnel::disconnect(&conn_record.id)?;
     Ok(conn_record)
 }
 
 #[command]
 pub async fn delete_connection_record(connection_id: String) -> Result<bool, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
-    db.delete_connection(&connection_id)
-        .map_err(|e| e.to_string())
+    let deleted = db.delete_connection(&connection_id).map_err(|e| e.to_string())?;
+    crate::ssh_tunnel::disconnect(&connection_id)?;
+    Ok(deleted)
 }
 
 // ============ Query History Commands ============

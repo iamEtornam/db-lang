@@ -38,6 +38,8 @@ pub struct DbConnectionRecord {
     pub username: String,
     pub password: String,
     pub ssl_enabled: bool,
+    #[serde(default)]
+    pub options: crate::connection_options::ConnectionOptions,
     pub auth_json: String,
     pub created_at: String,
     pub updated_at: String,
@@ -182,6 +184,11 @@ impl AppDatabase {
             .unwrap_or(0) > 0;
         if !has_auth_json_col {
             conn.execute("ALTER TABLE connections ADD COLUMN auth_json TEXT NOT NULL DEFAULT ''", []).ok();
+        }
+
+        let has_options: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('connections') WHERE name='options_json')", [], |row| row.get(0))?;
+        if !has_options {
+            conn.execute("ALTER TABLE connections ADD COLUMN options_json TEXT NOT NULL DEFAULT '{}'", [])?;
         }
 
         // Query history table (no user_id)
@@ -357,10 +364,11 @@ impl AppDatabase {
     // ============ Connection operations ============
 
     pub fn create_connection(&self, conn_record: &DbConnectionRecord) -> Result<(), AppDbError> {
+        conn_record.options.validate(&conn_record.db_type, &conn_record.host, &conn_record.port).map_err(AppDbError::InvalidData)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO connections (id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO connections (id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at, options_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 &conn_record.id,
                 &conn_record.name,
@@ -374,6 +382,7 @@ impl AppDatabase {
                 &conn_record.auth_json,
                 &conn_record.created_at,
                 &conn_record.updated_at,
+                serde_json::to_string(&conn_record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
             ],
         )?;
         Ok(())
@@ -382,7 +391,7 @@ impl AppDatabase {
     pub fn get_connections(&self) -> Result<Vec<DbConnectionRecord>, AppDbError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at 
+            "SELECT id, name, db_type, host, port, database_name, username, password, ssl_enabled, auth_json, created_at, updated_at, options_json
              FROM connections ORDER BY created_at DESC",
         )?;
 
@@ -401,6 +410,7 @@ impl AppDatabase {
                     auth_json: row.get(9)?,
                     created_at: row.get(10)?,
                     updated_at: row.get(11)?,
+                    options: serde_json::from_str(&row.get::<_, String>(12)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e)))?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -409,10 +419,11 @@ impl AppDatabase {
     }
 
     pub fn update_connection(&self, conn_record: &DbConnectionRecord) -> Result<bool, AppDbError> {
+        conn_record.options.validate(&conn_record.db_type, &conn_record.host, &conn_record.port).map_err(AppDbError::InvalidData)?;
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         let rows = conn.execute(
-            "UPDATE connections SET name = ?1, db_type = ?2, host = ?3, port = ?4, database_name = ?5, username = ?6, password = ?7, ssl_enabled = ?8, auth_json = ?9, updated_at = ?10 WHERE id = ?11",
+            "UPDATE connections SET name = ?1, db_type = ?2, host = ?3, port = ?4, database_name = ?5, username = ?6, password = ?7, ssl_enabled = ?8, auth_json = ?9, updated_at = ?10, options_json = ?12 WHERE id = ?11",
             rusqlite::params![
                 &conn_record.name,
                 &conn_record.db_type,
@@ -425,6 +436,7 @@ impl AppDatabase {
                 &conn_record.auth_json,
                 now,
                 &conn_record.id,
+                serde_json::to_string(&conn_record.options).map_err(|e| AppDbError::InvalidData(e.to_string()))?,
             ],
         )?;
         Ok(rows > 0)
@@ -1114,4 +1126,29 @@ pub fn init_app_database(app_data_dir: PathBuf) -> Result<(), AppDbError> {
 
 pub fn get_app_database() -> Result<&'static AppDatabase, AppDbError> {
     APP_DB.get().ok_or(AppDbError::DatabaseError("Database not initialized".to_string()))
+}
+
+#[cfg(test)]
+mod connection_option_tests {
+    use super::*;
+    #[test]
+    fn options_migrate_and_roundtrip_without_changing_credentials() {
+        let connection = Connection::open_in_memory().unwrap();
+        let database = AppDatabase { conn: Mutex::new(connection) };
+        database.run_migrations().unwrap();
+        database.run_migrations().unwrap();
+        let mut record = DbConnectionRecord { id: "fixture".into(), name: "Fixture".into(), db_type: "postgres".into(), host: "db.internal".into(), port: "5432".into(), database: "data".into(), username: "reader".into(), password: "fixture-only".into(), ssl_enabled: false, auth_json: String::new(), options: Default::default(), created_at: "now".into(), updated_at: "now".into() };
+        database.create_connection(&record).unwrap();
+        assert_eq!(database.get_connections().unwrap()[0].options, Default::default());
+        record.options.group = "Analytics".into();
+        record.options.environment = "production".into();
+        record.options.read_only = true;
+        database.update_connection(&record).unwrap();
+        let saved = database.get_connections().unwrap().remove(0);
+        assert_eq!(saved.options, record.options);
+        assert_eq!(saved.password, "fixture-only");
+        record.options.environment = "invalid".into();
+        assert!(database.update_connection(&record).is_err());
+        assert_eq!(database.get_connections().unwrap()[0].options.environment, "production");
+    }
 }
