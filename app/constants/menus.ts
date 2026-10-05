@@ -24,6 +24,11 @@ export const navigationMenus: NavGroup[] = [
         icon: 'lucide:table-2',
       },
       {
+        title: 'Compare schemas',
+        href: '/compare',
+        icon: 'lucide:table-2',
+      },
+      {
         title: 'ER diagrams',
         href: '/relationships',
         icon: 'lucide:network',
