@@ -183,7 +183,8 @@ export function useAppUpdater() {
   async function installAndRelaunch(): Promise<void> {
     if (s.state.value !== 'ready') {
       await downloadAndInstall()
-      if (s.state.value !== 'ready') return
+      // The async install can change the ref beyond TypeScript's earlier narrowing.
+      if ((s.state.value as UpdaterState) !== 'ready') return
     }
     await relaunch()
   }
