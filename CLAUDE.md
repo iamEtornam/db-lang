@@ -31,7 +31,7 @@ The Tauri config wires `beforeDevCommand: npm run dev` and `beforeBuildCommand: 
 
 Connection records are stored in a local SQLite app DB (`AppDatabase` in `app_db.rs`, kept under `~/Library/Application Support/QueryStudio` on macOS / `dirs::data_dir()/QueryStudio` elsewhere). The frontend works exclusively with **`connection_id`s** — it sends an ID + a query, and `resolve_connection()` in `lib.rs` looks up the row, calls `build_connection_string()`, and instantiates a driver. Passwords / service-account JSON / API keys never round-trip through Vue.
 
-This is load-bearing: when adding new commands that touch a saved DB, take a `connection_id`, not a connection string. The `test_connection` command is the exception (used for unsaved connections from the UI dialog).
+This is load-bearing: when adding new commands that touch a saved DB, take a `connection_id`, not a connection string. The connection dialog uses `test_connection_draft`: it sends newly entered fields plus an optional saved ID; Rust resolves unchanged secrets. Public connection/LLM views return empty secret fields and presence flags. Blank edits keep credentials for the same engine/provider; explicit clear flags remove them. Credential storage uses AES-256-GCM with an OS-store key. See `docs/credential-storage.md` for migration and recovery.
 
 ### Driver layer
 

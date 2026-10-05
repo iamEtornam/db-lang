@@ -158,41 +158,62 @@ impl DatabaseDriver for SqliteDriver {
     async fn get_table_columns(&self, table: &str, _schema: Option<&str>) -> Result<Vec<ColumnInfo>, DriverError> {
         let rows = self.query_rows(&format!("PRAGMA table_info({})", escape_sqlite_identifier(table))).await?;
 
-        Ok(rows.iter().map(|row| ColumnInfo {
+        let foreign_keys = self.query_rows(&format!("PRAGMA foreign_key_list({})", escape_sqlite_identifier(table))).await?;
+        Ok(rows.iter().map(|row| {
+            let foreign_key = foreign_keys.iter().find(|fk| fk["from"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(row["name"].as_str().unwrap_or(""))));
+            ColumnInfo {
             name: row["name"].as_str().unwrap_or("").to_string(),
             data_type: row["type"].as_str().unwrap_or("TEXT").to_string(),
             is_nullable: row["notnull"].as_i64().map(|v| v == 0).unwrap_or(true),
             column_default: row["dflt_value"].as_str().map(|s| s.to_string()),
-            is_primary_key: row["pk"].as_i64().map(|v| v == 1).unwrap_or(false),
-            is_foreign_key: false,
-            referenced_table: None,
-            referenced_column: None,
-        }).collect())
+            is_primary_key: row["pk"].as_i64().map(|v| v > 0).unwrap_or(false),
+            is_foreign_key: foreign_key.is_some(),
+            referenced_table: foreign_key.and_then(|fk| fk["table"].as_str()).map(str::to_owned),
+            referenced_column: foreign_key.and_then(|fk| fk["to"].as_str()).map(str::to_owned),
+        }}).collect())
     }
 
     async fn get_relationships(&self) -> Result<Vec<Relationship>, DriverError> {
         let tables = self.get_tables().await?;
         let mut relationships = Vec::new();
-
+        let mut table_columns = std::collections::HashMap::<String, Vec<Value>>::new();
         for table in &tables {
-            let fk_rows = self.query_rows(&format!("PRAGMA foreign_key_list({})", escape_sqlite_identifier(&table.name)))
-                .await
-                .unwrap_or_default();
-
+            if !table_columns.contains_key(&table.name) {
+                let columns = self.query_rows(&format!("PRAGMA table_info({})", escape_sqlite_identifier(&table.name))).await?;
+                table_columns.insert(table.name.clone(), columns);
+            }
+            let fk_rows = self.query_rows(&format!("PRAGMA foreign_key_list({})", escape_sqlite_identifier(&table.name))).await?;
             for row in fk_rows {
-                if let (Some(target_table), Some(from_col), Some(to_col)) = (
-                    row["table"].as_str(),
-                    row["from"].as_str(),
-                    row["to"].as_str(),
-                ) {
-                    relationships.push(Relationship {
-                        source_table: table.name.clone(),
-                        source_column: from_col.to_string(),
-                        target_table: target_table.to_string(),
-                        target_column: to_col.to_string(),
-                        relationship_type: Some("many-to-one".to_string()),
-                    });
+                let declared_target = row["table"].as_str().ok_or_else(|| DriverError::QueryFailed("Foreign key has no target table".into()))?;
+                let target_table = tables.iter().find(|t| t.name.eq_ignore_ascii_case(declared_target)).map(|t| t.name.as_str()).unwrap_or(declared_target);
+                let declared_source = row["from"].as_str().ok_or_else(|| DriverError::QueryFailed("Foreign key has no source column".into()))?;
+                let source_column = table_columns[&table.name].iter().find_map(|r| r["name"].as_str().filter(|name| name.eq_ignore_ascii_case(declared_source))).unwrap_or(declared_source).to_owned();
+                if !table_columns.contains_key(target_table) {
+                    let columns = self.query_rows(&format!("PRAGMA table_info({})", escape_sqlite_identifier(target_table))).await?;
+                    table_columns.insert(target_table.to_owned(), columns);
                 }
+                let target_columns = &table_columns[target_table];
+                // REFERENCES parent without a column list targets its ordered PK.
+                let target_column = match row["to"].as_str().filter(|s| !s.is_empty()) {
+                    Some(column) => target_columns.iter().find_map(|r| r["name"].as_str().filter(|name| name.eq_ignore_ascii_case(column))).unwrap_or(column).to_owned(),
+                    None => {
+                        let mut keys: Vec<_> = target_columns.iter().filter_map(|r| {
+                            let position = r["pk"].as_u64()?;
+                            if position == 0 { return None; }
+                            Some((position, r["name"].as_str()?))
+                        }).collect();
+                        keys.sort_by_key(|(position, _)| *position);
+                        let position = row["seq"].as_u64().ok_or_else(|| DriverError::QueryFailed("Foreign key has no column position".into()))? as usize;
+                        keys.get(position).map(|(_, name)| (*name).to_owned())
+                            .ok_or_else(|| DriverError::QueryFailed(format!("Cannot resolve the referenced primary key of {target_table}")))?
+                    }
+                };
+                relationships.push(Relationship {
+                    source_schema: None, target_schema: None,
+                    source_table: table.name.clone(), source_column,
+                    target_table: target_table.to_owned(), target_column,
+                    relationship_type: Some("many-to-one".into()),
+                });
             }
         }
         Ok(relationships)
@@ -230,4 +251,48 @@ mod read_only_tests {
         assert_eq!(writable.execute_query("SELECT value FROM fixture").await.unwrap()[0]["value"], 7);
         drop(readonly); drop(writable); std::fs::remove_file(path).unwrap();
     }
+}
+
+#[cfg(test)]
+mod relationship_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resolves_explicit_implicit_composite_and_self_references() {
+        let driver = SqliteDriver::new(":memory:").unwrap();
+        driver.conn.lock().await.execute_batch("
+            CREATE TABLE parent (first TEXT, second TEXT, PRIMARY KEY(second, first));
+            CREATE TABLE implicit_child (x TEXT, y TEXT, FOREIGN KEY(x,y) REFERENCES parent);
+            CREATE TABLE named_parent (id INTEGER PRIMARY KEY);
+            CREATE TABLE explicit_child (a INTEGER REFERENCES named_parent(id));
+            CREATE TABLE tree (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES tree);
+        ").unwrap();
+        let edges = driver.get_relationships().await.unwrap();
+        assert_eq!(edges.len(), 4);
+        let target = |table: &str, column: &str| edges.iter().find(|e| e.source_table == table && e.source_column == column).unwrap().target_column.as_str();
+        assert_eq!(target("implicit_child", "x"), "second");
+        assert_eq!(target("implicit_child", "y"), "first");
+        assert_eq!(target("explicit_child", "a"), "id");
+        assert_eq!(target("tree", "parent_id"), "id");
+        assert!(edges.iter().all(|e| e.source_schema.is_none() && e.target_schema.is_none()));
+        let parent = driver.get_table_columns("parent", None).await.unwrap();
+        assert!(parent.iter().all(|c| c.is_primary_key));
+        let child = driver.get_table_columns("implicit_child", None).await.unwrap();
+        assert!(child.iter().all(|c| c.is_foreign_key));
+    }
+    #[tokio::test]
+    async fn canonicalizes_case_insensitive_foreign_key_identifiers() {
+        let driver = SqliteDriver::new(":memory:").unwrap();
+        driver.conn.lock().await.execute_batch("
+            CREATE TABLE Parent (ID INTEGER PRIMARY KEY);
+            CREATE TABLE Child (Owner_ID INTEGER, FOREIGN KEY(owner_id) REFERENCES parent(id));
+        ").unwrap();
+        let edges = driver.get_relationships().await.unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].source_table, "Child");
+        assert_eq!(edges[0].source_column, "Owner_ID");
+        assert_eq!(edges[0].target_table, "Parent");
+        assert_eq!(edges[0].target_column, "ID");
+    }
+
 }

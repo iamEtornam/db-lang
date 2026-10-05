@@ -503,7 +503,7 @@ mod tests {
         let conn = rusqlite::Connection::open(&data).unwrap();
         conn.execute_batch("CREATE TABLE items(id INTEGER, name TEXT); INSERT INTO items VALUES (1,'one'),(2,'two'),(3,'three');").unwrap();
         drop(conn);
-        let db = AppDatabase::new(dir.clone()).unwrap();
+        let db = AppDatabase::new_test(dir.clone());
         let record = DbConnectionRecord {
             id: "allowed".into(),
             name: "Test".into(),
@@ -524,7 +524,11 @@ mod tests {
         denied.id = "denied".into();
         db.create_connection(&denied).unwrap();
         drop(db);
-        let db = AppDatabase::open_read_only(&dir.join("query_studio.db")).unwrap();
+        let before = std::fs::read(dir.join("query_studio.db")).unwrap();
+        assert!(AppDatabase::open_read_only_with_key(&dir.join("query_studio.db"), |_, create| { assert!(!create); Err("Missing fixture key".into()) }).is_err());
+        assert!(AppDatabase::open_read_only_with_key(&dir.join("query_studio.db"), |_, _| crate::credential_vault::CredentialVault::from_key(&[8; 32])).is_err());
+        assert_eq!(std::fs::read(dir.join("query_studio.db")).unwrap(), before);
+        let db = AppDatabase::open_read_only_with_key(&dir.join("query_studio.db"), |_, create| { assert!(!create); crate::credential_vault::CredentialVault::from_key(&[7; 32]) }).unwrap();
         assert!(db.delete_connection("allowed").is_err());
         (
             Fixture(dir),

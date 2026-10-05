@@ -52,3 +52,6 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 sqlparser = { version = "0.63", features = ["visitor"] }
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }

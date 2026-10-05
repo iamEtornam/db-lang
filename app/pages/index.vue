@@ -4,12 +4,15 @@ import { toast } from 'vue-sonner'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import ResultsTable from '~/components/results/ResultsTable.vue'
 import { Textarea } from '~/components/ui/textarea'
-import { Separator } from '~/components/ui/separator'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '~/components/ui/dialog'
 import { useConnectionsStore } from '~/stores/connections'
 import { useHistoryStore } from '~/stores/history'
+import { queryForExecution } from '~/lib/queryWorkspace'
 import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { QueryResult } from '~/types/query'
+import QueryPlanDialog from '~/components/query/QueryPlanDialog.vue'
 
 useHead({ title: 'Query' })
 
@@ -24,12 +27,21 @@ const {
 
 const tableNames = computed(() => tables.value.map(t => t.name))
 
-const naturalQuery = ref('')
-const generatedQuery = ref('')
+const workspaceConnectionId = computed(() => activeConnection.value?.id)
+const { workspace, activeTab, storageError, pendingCloseId, addTab, closeTab, confirmClose } = useQueryWorkspace(workspaceConnectionId)
+const naturalQuery = computed({ get: () => activeTab.value.prompt, set: value => { activeTab.value.prompt = value } })
+const generatedQuery = computed({ get: () => activeTab.value.query, set: value => { activeTab.value.query = value } })
+const lastExecutedQuery = ref('')
+const workspaceKey = computed(() => `${workspaceConnectionId.value}:${workspace.value.activeId}`)
 const isTranslating = ref(false)
 const isExecuting = ref(false)
 const queryResult = ref<QueryResult | null>(null)
 const queryError = ref<string | null>(null)
+watch(() => [workspace.value.activeId, workspaceConnectionId.value], () => {
+  queryResult.value = null
+  queryError.value = null
+  lastExecutedQuery.value = ''
+})
 const activeResultTab = ref<'table' | 'chart' | 'insights' | 'watch'>('table')
 const isRtdbConnection = computed(() => activeConnection.value?.db_type === 'firebase_rtdb')
 const showSettingsPrompt = ref(false)
@@ -79,6 +91,7 @@ watch(queryResult, () => {
 async function generateChart() {
   if (!queryResult.value || !activeConnection.value) return
   isGeneratingChart.value = true
+  const key = workspaceKey.value
   try {
     const config = await invoke<ChartConfig>('generate_chart_config', {
       data: JSON.stringify(queryResult.value.rows.slice(0, 50)),
@@ -86,7 +99,7 @@ async function generateChart() {
       query: naturalQuery.value,
       engine: activeConnection.value.db_type,
     })
-    chartConfig.value = config
+    if (key === workspaceKey.value) chartConfig.value = config
   }
   catch (err) {
     toast.error('Could not generate chart', { description: err as string })
@@ -99,17 +112,19 @@ async function generateChart() {
 async function generateInsight(forceRefresh = false) {
   if (!queryResult.value || queryResult.value.rows.length === 0 || !activeConnection.value) return
   isGeneratingInsight.value = true
+  const key = workspaceKey.value
   // Capture the sample once; reused by follow-up questions so we never re-run
   // the query or re-ship the full result set. The backend caps it further.
   insightSampleRows.value = queryResult.value.rows.slice(0, INSIGHT_SAMPLE_LIMIT)
   try {
-    resultExplanation.value = await invoke<ResultExplanation>('explain_query_result', {
+    const explanation = await invoke<ResultExplanation>('explain_query_result', {
       connectionId: activeConnection.value.id,
-      query: generatedQuery.value,
+      query: lastExecutedQuery.value,
       resultSummary: JSON.stringify(insightSampleRows.value),
       question: null,
       forceRefresh,
     })
+    if (key === workspaceKey.value) resultExplanation.value = explanation
   }
   catch (err) {
     toast.error('Could not generate insight', { description: err as string })
@@ -123,13 +138,15 @@ async function generateInsight(forceRefresh = false) {
 async function askFollowup(question: string) {
   if (!activeConnection.value || insightSampleRows.value.length === 0) return
   isGeneratingInsight.value = true
+  const key = workspaceKey.value
   try {
-    resultExplanation.value = await invoke<ResultExplanation>('explain_query_result', {
+    const explanation = await invoke<ResultExplanation>('explain_query_result', {
       connectionId: activeConnection.value.id,
-      query: generatedQuery.value,
+      query: lastExecutedQuery.value,
       resultSummary: JSON.stringify(insightSampleRows.value),
       question,
     })
+    if (key === workspaceKey.value) resultExplanation.value = explanation
   }
   catch (err) {
     toast.error('Could not answer follow-up', { description: err as string })
@@ -172,72 +189,76 @@ onMounted(async () => {
 })
 
 async function onAskQuery() {
-  if (!activeConnection.value || !naturalQuery.value.trim()) return
-
-  const isConfigured = await invoke<boolean>('check_llm_configured')
-  if (!isConfigured) {
-    showSettingsPrompt.value = true
-    toast.error('AI model not configured', {
-      description: 'Please set up your AI provider and API key in Settings first.',
-    })
-    return
-  }
-
-  // Ensure schema is loaded
-  if (!schemaContext.value) {
-    toast.info('Loading database schema...')
-    const loaded = await connectionsStore.loadSchema()
-    if (!loaded || !schemaContext.value) {
-      toast.error('Could not load database schema. Check your connection.')
-      return
-    }
-  }
-
+  if (isTranslating.value || isExecuting.value || !activeConnection.value || !naturalQuery.value.trim()) return
+  const connectionId = activeConnection.value.id
+  const tabId = workspace.value.activeId
+  const prompt = naturalQuery.value
+  const engine = activeConnection.value.db_type
+  const stillCurrent = () => activeConnection.value?.id === connectionId && workspace.value.activeId === tabId
   isTranslating.value = true
   queryError.value = null
-  generatedQuery.value = ''
-  queryResult.value = null
 
   try {
+    const isConfigured = await invoke<boolean>('check_llm_configured')
+    if (!stillCurrent()) return
+    if (!isConfigured) {
+      showSettingsPrompt.value = true
+      toast.error('AI model not configured', { description: 'Set up your AI provider in Settings first.' })
+      return
+    }
+    showSettingsPrompt.value = false
+    if (!schemaContext.value) {
+      const loaded = await connectionsStore.loadSchema()
+      if (!stillCurrent()) return
+      if (!loaded || !schemaContext.value) throw new Error('Could not load database schema. Check your connection.')
+    }
     const sql = await invoke<string>('translate_with_schema', {
-      query: naturalQuery.value,
+      query: prompt,
       schemaContext: schemaContext.value,
       tableNames: tableNames.value,
-      engine: activeConnection.value.db_type,
+      engine,
     })
+    if (!stillCurrent()) return
     generatedQuery.value = sql
-
     await executeQuery()
   }
   catch (err) {
-    queryError.value = err as string
-    toast.error('Failed to generate query', { description: err as string })
+    if (!stillCurrent()) return
+    queryError.value = String(err)
+    toast.error('Failed to generate query', { description: String(err) })
   }
   finally {
     isTranslating.value = false
   }
 }
 
-async function executeQuery(page = 1) {
-  if (!activeConnection.value || !generatedQuery.value.trim()) return
+async function executeQuery(page?: number, selectedQuery?: string) {
+  const query = queryForExecution(generatedQuery.value, lastExecutedQuery.value, page, selectedQuery)
+  if (isExecuting.value || !activeConnection.value || !query.trim()) return
+  const connectionId = activeConnection.value.id
+  const prompt = naturalQuery.value
+  const tabId = workspace.value.activeId
+  const stillCurrent = () => activeConnection.value?.id === connectionId && workspace.value.activeId === tabId
+  lastExecutedQuery.value = query
   isExecuting.value = true
   queryError.value = null
 
   const startTime = Date.now()
 
   try {
-    const isSelect = generatedQuery.value.trim().toUpperCase().startsWith('SELECT')
+    const isSelect = query.trim().toUpperCase().startsWith('SELECT')
 
     if (isSelect) {
       const result = await invoke<PaginatedResult>('query_db_paginated', {
-        connectionId: activeConnection.value.id,
-        query: generatedQuery.value,
-        page,
+        connectionId,
+        query,
+        page: page ?? 1,
         pageSize: 50,
       })
 
+      if (!stillCurrent()) return
       const rows = JSON.parse(result.data) as Record<string, unknown>[]
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : []
+      const columns = rows.length > 0 ? Object.keys(rows[0]!) : []
 
       queryResult.value = {
         rows,
@@ -251,12 +272,13 @@ async function executeQuery(page = 1) {
     }
     else {
       const data = await invoke<string>('query_db', {
-        connectionId: activeConnection.value.id,
-        query: generatedQuery.value,
+        connectionId,
+        query,
       })
 
+      if (!stillCurrent()) return
       const rows = JSON.parse(data) as Record<string, unknown>[]
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : []
+      const columns = rows.length > 0 ? Object.keys(rows[0]!) : []
 
       queryResult.value = {
         rows,
@@ -272,23 +294,24 @@ async function executeQuery(page = 1) {
     activeResultTab.value = 'table'
 
     await historyStore.addToHistory({
-      connection_id: activeConnection.value.id,
-      natural_query: naturalQuery.value,
-      sql_query: generatedQuery.value,
+      connection_id: connectionId,
+      natural_query: prompt,
+      sql_query: query,
       result_count: queryResult.value.total_count ?? queryResult.value.rows.length,
       execution_time_ms: queryResult.value.execution_time_ms,
       status: 'success',
     })
   }
   catch (err) {
+    if (!stillCurrent()) return
     queryError.value = err as string
     toast.error('Query failed', { description: err as string })
 
     if (activeConnection.value) {
       await historyStore.addToHistory({
-        connection_id: activeConnection.value.id,
-        natural_query: naturalQuery.value,
-        sql_query: generatedQuery.value,
+        connection_id: connectionId,
+        natural_query: prompt,
+        sql_query: query,
         status: 'error',
         error_message: err as string,
       })
@@ -312,22 +335,14 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function onEnterKey(e: KeyboardEvent) {
-  if (!e.shiftKey) {
+  if (!e.shiftKey && !e.metaKey && !e.ctrlKey) {
     e.preventDefault()
     onAskQuery()
   }
 }
 
-function copyQuery() {
-  navigator.clipboard.writeText(generatedQuery.value)
-  toast.success('Copied to clipboard')
-}
 
-function formatCellValue(val: unknown): string {
-  if (val === null || val === undefined) return ''
-  if (typeof val === 'object') return JSON.stringify(val)
-  return String(val)
-}
+
 
 const router = useRouter()
 function goToSettings() {
@@ -338,7 +353,7 @@ function goToSettings() {
 <template>
   <div class="flex flex-col h-full overflow-hidden">
     <!-- Query Editor (fixed at top, never grows) -->
-    <div class="shrink-0 space-y-3 pb-3 border-b border-border">
+    <div class="shrink-0 max-h-[65vh] overflow-y-auto space-y-3 pb-3 border-b border-border">
       <!-- Natural language input -->
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
@@ -400,23 +415,30 @@ function goToSettings() {
         </Button>
       </div>
 
-      <!-- Generated SQL -->
-      <div v-if="generatedQuery" class="space-y-2">
-        <div class="flex items-center justify-between">
-          <label class="text-sm font-medium">Generated SQL</label>
-          <div class="flex items-center gap-1">
-            <Button size="sm" variant="ghost" class="h-7 px-2 text-xs" @click="copyQuery">
-              <Icon name="lucide:copy" class="size-3.5" />
-            </Button>
-            <Button size="sm" variant="ghost" class="h-7 px-2 text-xs text-destructive" @click="generatedQuery = ''; queryResult = null; queryError = null">
-              <Icon name="lucide:x" class="size-3.5" />
-            </Button>
-          </div>
+      <!-- Manual and AI queries share the same connection-scoped workspace. -->
+      <div class="space-y-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <Tabs v-model="workspace.activeId" class="min-w-0 flex-1">
+            <TabsList aria-label="Query tabs" class="h-auto max-w-full overflow-x-auto justify-start bg-transparent gap-1">
+              <div v-for="(tab, index) in workspace.tabs" :key="tab.id" class="flex items-center shrink-0">
+                <TabsTrigger :value="tab.id" :disabled="isExecuting || isTranslating" class="text-xs data-[state=active]:shadow-none">
+                  {{ tab.name === 'Untitled query' ? `Query ${index + 1}` : tab.name }}
+                </TabsTrigger>
+                <Button variant="ghost" size="sm" class="h-7 px-2" :aria-label="`Close query ${index + 1}`"
+                  :disabled="isExecuting || isTranslating" @click="closeTab(tab.id)">×</Button>
+              </div>
+            </TabsList>
+          </Tabs>
+          <Button variant="ghost" size="sm" :disabled="isExecuting || isTranslating" @click="addTab">New query</Button>
         </div>
-
-        <Textarea
+        <QueryCodeEditor
+          :key="workspaceKey"
           v-model="generatedQuery"
-          class="min-h-[60px] resize-none font-mono text-sm"
+          :engine="activeConnection?.db_type ?? 'postgres'"
+          :tables="tables"
+          :table-columns="connectionsStore.tableColumns"
+          :disabled="!activeConnection || isExecuting || isTranslating"
+          @execute="executeQuery(1, $event)"
         />
 
         <div class="flex items-center gap-2">
@@ -432,8 +454,23 @@ function goToSettings() {
               ⌘↵
             </kbd>
           </Button>
+          <QueryPlanDialog v-if="activeConnection" :connection-id="activeConnection.id" :engine="activeConnection.db_type" :query="generatedQuery" />
         </div>
+        <p v-if="storageError" role="alert" class="text-sm text-destructive">{{ storageError }}</p>
       </div>
+
+      <Dialog :open="pendingCloseId !== null" @update:open="open => { if (!open) pendingCloseId = null }">
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Discard this query draft?</DialogTitle>
+            <DialogDescription>Closing this tab removes its saved query and prompt. Copy anything you want to keep first.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" @click="pendingCloseId = null">Keep draft</Button>
+            <Button variant="destructive" @click="confirmClose">Discard draft</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <!-- Error -->
       <div v-if="queryError" class="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive flex items-start gap-2">
@@ -479,81 +516,11 @@ function goToSettings() {
         </TabsList>
 
         <TabsContent value="table" class="flex-1 overflow-hidden mt-2">
-          <div v-if="isExecuting && !queryResult" class="flex flex-col gap-2 p-4">
-            <div v-for="i in 5" :key="i" class="h-10 bg-muted/50 rounded animate-pulse" />
-          </div>
-
-          <div v-else-if="queryResult && queryResult.rows.length > 0" class="flex flex-col h-full overflow-hidden rounded-md border border-border">
-            <div class="flex items-center gap-3 px-3 py-2 border-b border-border text-sm text-muted-foreground shrink-0">
-              <span>{{ queryResult.total_count?.toLocaleString() ?? queryResult.rows.length }} rows</span>
-              <Separator orientation="vertical" class="h-4" />
-              <span>{{ queryResult.columns.length }} columns</span>
-              <Separator orientation="vertical" class="h-4" />
-              <Badge variant="outline" class="text-xs">{{ queryResult.execution_time_ms }}ms</Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                class="ml-auto h-7 px-2 text-xs gap-1.5"
-                @click="explainResultFromTable"
-              >
-                <Icon name="lucide:sparkles" class="size-3.5 text-primary" />
-                Explain result
-              </Button>
-            </div>
-
-            <div class="overflow-auto flex-1">
-              <table class="w-full text-sm">
-                <thead class="sticky top-0 bg-muted/90 backdrop-blur-sm">
-                  <tr class="border-b border-border">
-                    <th
-                      v-for="col in queryResult.columns"
-                      :key="col"
-                      class="px-3 py-2 text-left text-xs font-medium text-muted-foreground whitespace-nowrap"
-                    >
-                      {{ col }}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border">
-                  <tr
-                    v-for="(row, ri) in queryResult.rows"
-                    :key="ri"
-                    class="hover:bg-muted/30 transition-colors"
-                  >
-                    <td
-                      v-for="col in queryResult.columns"
-                      :key="col"
-                      class="px-3 py-1.5 whitespace-nowrap max-w-[300px] truncate"
-                    >
-                      <template v-if="row[col] === null">
-                        <span class="text-muted-foreground italic text-xs">null</span>
-                      </template>
-                      <template v-else>
-                        {{ formatCellValue(row[col]) }}
-                      </template>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div v-if="queryResult.has_more || queryResult.page > 1" class="flex items-center justify-between border-t border-border px-3 py-2 text-sm text-muted-foreground shrink-0">
-              <span>Page {{ queryResult.page }}</span>
-              <div class="flex gap-1">
-                <Button variant="ghost" size="sm" class="h-7" :disabled="queryResult.page <= 1" @click="executeQuery(queryResult.page - 1)">
-                  <Icon name="lucide:chevron-left" class="size-4" />
-                </Button>
-                <Button variant="ghost" size="sm" class="h-7" :disabled="!queryResult.has_more" @click="executeQuery(queryResult.page + 1)">
-                  <Icon name="lucide:chevron-right" class="size-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div v-else-if="queryResult && queryResult.rows.length === 0" class="flex flex-col items-center justify-center flex-1 py-12 text-muted-foreground">
-            <Icon name="lucide:table" class="size-8 mb-3" />
-            <p class="text-sm">Query returned no results</p>
-          </div>
+          <ResultsTable :result="queryResult" :is-loading="isExecuting" @load-page="executeQuery">
+            <template v-if="queryResult?.rows.length" #actions>
+              <Button size="sm" variant="ghost" class="h-8" @click="explainResultFromTable">Explain result</Button>
+            </template>
+          </ResultsTable>
         </TabsContent>
 
         <!-- Chart tab -->
