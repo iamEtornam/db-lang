@@ -1,4 +1,5 @@
 mod app_db;
+mod credential_vault;
 mod commands;
 mod connection_pool;
 mod database;
@@ -1303,8 +1304,15 @@ pub fn run() {
             get_schema_kb,
             refresh_schema_kb,
             update_table_description,
+            app_db::credential_storage_status,
+            app_db::retry_credential_storage,
+            commands::export_connection_profiles,
+            commands::import_connection_profiles,
             // Connection management
             commands::save_connection,
+            commands::test_connection_draft,
+            commands::list_gemini_models,
+            commands::list_ollama_models,
             commands::update_connection,
             commands::get_connections,
             commands::delete_connection_record,

@@ -9,6 +9,11 @@ export interface Connection {
   password: string
   ssl_enabled: boolean
   auth_json: string
+  has_password?: boolean
+  has_auth_json?: boolean
+  clear_password?: boolean
+  clear_auth_json?: boolean
+  replace_host?: boolean
   created_at: string
   updated_at: string
 }
@@ -75,6 +80,7 @@ export interface ResultExplanation {
 }
 
 export interface LlmConfig {
+  has_api_key?: boolean
   provider: string
   model: string
   api_key: string
