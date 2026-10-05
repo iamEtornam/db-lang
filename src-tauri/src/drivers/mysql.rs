@@ -64,6 +64,24 @@ impl MysqlDriver {
         Self::rows_to_json(result)
     }
 
+    pub async fn import_rows(&mut self, raw_table: &str, schema: Option<&str>, table: &str, columns: &[String], rows: &[Vec<Option<String>>]) -> Result<(), DriverError> {
+        let conn = self.conn.get_mut();
+        let storage: Option<String> = conn.exec_first("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=COALESCE(?, DATABASE()) AND TABLE_NAME=?", (schema, raw_table)).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        if !storage.is_some_and(|engine| engine.eq_ignore_ascii_case("InnoDB")) { return Err(DriverError::QueryFailed("Atomic import requires an InnoDB table".into())); }
+        let mode: Option<String> = conn.query_first("SELECT @@SESSION.sql_mode").await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        let strict_mode = format!("{},STRICT_ALL_TABLES", mode.unwrap_or_default());
+        conn.exec_drop("SET SESSION sql_mode = ?", (strict_mode,)).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        let names = columns.iter().map(|name| super::quote_identifier("mysql", name, None)).collect::<Vec<_>>().join(", ");
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        let mut tx = conn.start_transaction(mysql_async::TxOpts::default()).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        for (batch_index, batch) in rows.chunks(100).enumerate() {
+            let values = vec![format!("({placeholders})"); batch.len()].join(", ");
+            let parameters = mysql_async::Params::Positional(batch.iter().flatten().map(|cell| cell.as_ref().map(|text| mysql_async::Value::Bytes(text.as_bytes().to_vec())).unwrap_or(mysql_async::Value::NULL)).collect());
+            tx.exec_drop(format!("INSERT INTO {table} ({names}) VALUES {values}"), parameters).await.map_err(|e| DriverError::QueryFailed(format!("Import rows {} through {}: {e}", batch_index * 100 + 1, batch_index * 100 + batch.len())))?;
+        }
+        tx.commit().await.map_err(|e| DriverError::QueryFailed(e.to_string()))
+    }
+
     /// Run N statements atomically inside a single transaction. Explicit
     /// START TRANSACTION / COMMIT plus ROLLBACK on first error — mysql_async
     /// doesn't expose a typed transaction handle for MultiplexedConnection,

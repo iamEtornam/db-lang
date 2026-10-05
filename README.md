@@ -24,6 +24,7 @@
 - **🔥 Firebase Integration**: Browse Firestore collections and Realtime Database nodes with service-account authentication. Realtime DB includes live streaming — watch paths and see changes as they happen.
 - **🌙 Developer-First UI**: A sleek, modern, dark-mode-first interface designed for extended focus and high productivity.
 
+- **Data files**: Preview and map CSV/XLSX imports into SQL tables, or query CSV/JSON/Parquet locally with DuckDB. See [data-file setup](docs/data-files.md).
 - **CLI and MCP**: Headless, allowlisted read-only access to saved SQL connections. See [automation setup](docs/automation.md).
 
 ## 🛠️ Tech Stack

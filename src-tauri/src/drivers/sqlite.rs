@@ -66,6 +66,20 @@ impl SqliteDriver {
         Ok(results)
     }
 
+    pub async fn import_rows(&self, table: &str, columns: &[String], rows: &[Vec<Option<String>>]) -> Result<(), DriverError> {
+        let conn = self.conn.lock().await;
+        let tx = conn.unchecked_transaction().map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        let names = columns.iter().map(|name| super::quote_identifier("sqlite", name, None)).collect::<Vec<_>>().join(", ");
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        {
+            let mut statement = tx.prepare(&format!("INSERT INTO {table} ({names}) VALUES ({placeholders})")).map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+            for (index, row) in rows.iter().enumerate() {
+                statement.execute(rusqlite::params_from_iter(row.iter())).map_err(|e| DriverError::QueryFailed(format!("Import row {}: {e}", index + 1)))?;
+            }
+        }
+        tx.commit().map_err(|e| DriverError::QueryFailed(e.to_string()))
+    }
+
     /// Run N statements atomically inside a single transaction. Uses
     /// rusqlite's unchecked_transaction to drive an immediate BEGIN. On any
     /// error the drop guard rolls back; we only call commit() on success.
