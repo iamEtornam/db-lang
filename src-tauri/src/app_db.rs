@@ -313,7 +313,7 @@ impl AppDatabase {
             "CREATE TABLE IF NOT EXISTS llm_config (
                 id TEXT PRIMARY KEY DEFAULT 'local',
                 provider TEXT NOT NULL DEFAULT 'gemini',
-                model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+                model TEXT NOT NULL DEFAULT 'gemini-3.8-flash',
                 api_key TEXT NOT NULL DEFAULT '',
                 api_url TEXT,
                 created_at TEXT NOT NULL,

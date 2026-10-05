@@ -566,7 +566,7 @@ pub async fn get_llm_config() -> Result<LlmConfigView, String> {
         let now = chrono::Utc::now().to_rfc3339();
         Ok(public_llm_config(LlmConfig {
             provider: "gemini".to_string(),
-            model: "gemini-2.5-flash".to_string(),
+            model: crate::gemini::default_model("gemini"),
             api_key: String::new(),
             api_url: None,
             created_at: now.clone(),
