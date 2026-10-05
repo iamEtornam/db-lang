@@ -4,6 +4,7 @@ version = "0.0.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "db-lang"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +14,10 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "db_lang_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "query-studio-cli"
+path = "src/bin/query-studio-cli.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,7 +32,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
 mysql_async = "0.31"
-rusqlite = { version = "0.28", features = ["bundled"] }
+rusqlite = { version = "0.28", features = ["bundled", "hooks"] }
 thiserror = "1.0"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 dotenvy = "0.15"

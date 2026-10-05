@@ -135,6 +135,30 @@ pub struct AppDatabase {
 }
 
 impl AppDatabase {
+    /// Automation never creates or migrates the desktop database.
+    pub fn open_read_only(path: &std::path::Path) -> Result<Self, AppDbError> {
+        Self::open_read_only_with_key(path, CredentialVault::open_os_key)
+    }
+
+    pub(crate) fn open_read_only_with_key(path: &std::path::Path, load_key: impl Fn(&str, bool) -> Result<CredentialVault, String>) -> Result<Self, AppDbError> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let id: String = conn.query_row("SELECT id FROM credential_vault WHERE cleanup_pending=0 LIMIT 1", [], |row| row.get(0))
+            .map_err(|_| AppDbError::DatabaseError("Open the desktop app to finish credential migration before using automation".into()))?;
+        let vault = load_key(&id, false).map_err(AppDbError::DatabaseError)?;
+        let db = Self { conn: Mutex::new(conn), vault };
+        db.get_connections()?;
+        Ok(db)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test(app_data_dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let mut conn = Connection::open(app_data_dir.join("query_studio.db")).unwrap();
+        Self::run_migrations(&conn).unwrap();
+        let vault = Self::prepare_vault(&mut conn, |_, _| CredentialVault::from_key(&[7; 32])).unwrap();
+        Self { conn: Mutex::new(conn), vault }
+    }
+
     pub fn new(app_data_dir: PathBuf) -> Result<Self, AppDbError> {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| {
             AppDbError::DatabaseError(format!("Failed to create app data directory: {}", e))
