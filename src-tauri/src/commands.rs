@@ -19,6 +19,8 @@ pub struct CreateConnectionRequest {
     pub password: String,
     pub ssl_enabled: bool,
     #[serde(default)]
+    pub options: crate::connection_options::ConnectionOptions,
+    #[serde(default)]
     pub auth_json: String,
 }
 
@@ -94,7 +96,7 @@ pub fn connection_draft(
         id: original.map(|c| c.id.clone()).unwrap_or_else(|| Uuid::new_v4().to_string()),
         name: details.name, db_type: details.db_type, host,
         port: details.port, database: details.database, username: details.username,
-        password, ssl_enabled: details.ssl_enabled, auth_json,
+        password, ssl_enabled: details.ssl_enabled, auth_json, options: details.options,
         created_at: original.map(|c| c.created_at.clone()).unwrap_or_else(|| now.clone()),
         updated_at: now,
     })
@@ -123,6 +125,7 @@ pub async fn update_connection(connection: UpdateConnectionRequest) -> Result<Co
     let original = records.iter().find(|c| c.id == connection.id).ok_or("Connection not found")?;
     let record = connection_draft(connection.details, Some(original), connection.clear_password, connection.clear_auth_json, connection.replace_host)?;
     db.update_connection(&record).map_err(|e| e.to_string())?;
+    crate::ssh_tunnel::disconnect(&record.id)?;
     Ok(public_connection(record))
 }
 
@@ -130,9 +133,11 @@ pub async fn update_connection(connection: UpdateConnectionRequest) -> Result<Co
 pub async fn test_connection_draft(connection: CreateConnectionRequest, connection_id: Option<String>, clear_password: Option<bool>, clear_auth_json: Option<bool>, replace_host: Option<bool>) -> Result<bool, String> {
     let records = if connection_id.is_some() { get_app_database().map_err(|e| e.to_string())?.get_connections().map_err(|e| e.to_string())? } else { Vec::new() };
     let original = connection_id.as_ref().map(|id| records.iter().find(|c| &c.id == id).ok_or("Connection not found")).transpose()?;
-    let record = connection_draft(connection, original, clear_password.unwrap_or(false), clear_auth_json.unwrap_or(false), replace_host.unwrap_or(false))?;
-    let conn_str = crate::build_connection_string(&record)?;
-    let driver = crate::drivers::create_driver(&record.db_type, &conn_str).await
+    let mut record = connection_draft(connection, original, clear_password.unwrap_or(false), clear_auth_json.unwrap_or(false), replace_host.unwrap_or(false))?;
+    // Draft tests use lease-owned tunnels, never a persistent saved-connection registration.
+    record.id.clear();
+    let (engine, conn_str, read_only, _tunnel) = crate::route_connection(&record).await?;
+    let driver = crate::drivers::create_driver_with_policy(&engine, &conn_str, read_only, _tunnel.is_some()).await
         .map_err(|_| "Could not connect. Check the address, credentials, TLS settings, and network access.".to_string())?;
     driver.test_connection().await.map_err(|_| "Connection test failed. Check credentials, permissions, and network access.".to_string())
 }
@@ -140,8 +145,9 @@ pub async fn test_connection_draft(connection: CreateConnectionRequest, connecti
 #[command]
 pub async fn delete_connection_record(connection_id: String) -> Result<bool, String> {
     let db = get_app_database().map_err(|e| e.to_string())?;
-    db.delete_connection(&connection_id)
-        .map_err(|e| e.to_string())
+    let deleted = db.delete_connection(&connection_id).map_err(|e| e.to_string())?;
+    crate::ssh_tunnel::disconnect(&connection_id)?;
+    Ok(deleted)
 }
 
 // ============ Query History Commands ============
@@ -676,7 +682,7 @@ mod credential_boundary_tests {
             id: "original".into(), name: "test".into(), db_type: "mongodb".into(),
             host: "mongodb://user:uri-secret@one:27017,two:27017/db?authMechanismProperties=token-secret".into(),
             port: "27017".into(), database: "db".into(), username: "user".into(),
-            password: "password-secret".into(), auth_json: "service-secret".into(), ssl_enabled: false,
+            password: "password-secret".into(), auth_json: "service-secret".into(), ssl_enabled: false, options: Default::default(),
             created_at: "original-date".into(), updated_at: String::new(),
         }
     }
@@ -684,7 +690,7 @@ mod credential_boundary_tests {
     fn details(host: String) -> CreateConnectionRequest {
         CreateConnectionRequest { name: "renamed".into(), db_type: "mongodb".into(), host,
             port: "27017".into(), database: "db".into(), username: "user".into(),
-            password: String::new(), auth_json: String::new(), ssl_enabled: false }
+            password: String::new(), auth_json: String::new(), ssl_enabled: false, options: Default::default() }
     }
 
     #[test]
@@ -714,6 +720,13 @@ mod credential_boundary_tests {
         assert!(draft.password.is_empty() && draft.auth_json.is_empty());
         let mut edit = details(public_endpoint(&original.host));
         edit.password = "replacement".into();
+        let mut options_edit = details(public_endpoint(&original.host));
+        options_edit.options.read_only = true;
+        options_edit.options.group = "Analytics".into();
+        let draft = connection_draft(options_edit, Some(&original), false, false, false).unwrap();
+        assert!(draft.options.read_only);
+        assert_eq!(draft.options.group, "Analytics");
+        assert_eq!(draft.password, original.password);
         assert_eq!(connection_draft(edit, Some(&original), false, false, false).unwrap().password, "replacement");
         let mut edit = details("localhost".into()); edit.db_type = "postgres".into();
         let draft = connection_draft(edit, Some(&original), false, false, false).unwrap();

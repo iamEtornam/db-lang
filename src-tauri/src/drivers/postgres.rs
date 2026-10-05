@@ -4,11 +4,16 @@ use serde_json::Value;
 use super::{ColumnInfo, DatabaseDriver, DriverError, PaginatedResult, QueryLanguage, Relationship, TableInfo, strip_pagination};
 
 pub struct PostgresDriver {
+    read_only: bool,
+    query_lock: tokio::sync::Mutex<()>,
     client: tokio_postgres::Client,
 }
 
 impl PostgresDriver {
     pub async fn new(conn_str: &str) -> Result<Self, DriverError> {
+        Self::new_with_policy(conn_str, false).await
+    }
+    pub async fn new_with_policy(conn_str: &str, read_only: bool) -> Result<Self, DriverError> {
         let (client, connection) = tokio_postgres::connect(conn_str, tokio_postgres::NoTls)
             .await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
@@ -19,7 +24,7 @@ impl PostgresDriver {
             }
         });
 
-        Ok(Self { client })
+        Ok(Self { client, read_only, query_lock: tokio::sync::Mutex::new(()) })
     }
 
     async fn query_rows(&self, query: &str) -> Result<Vec<Value>, DriverError> {
@@ -31,7 +36,9 @@ impl PostgresDriver {
         query: &str,
         params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
     ) -> Result<Vec<Value>, DriverError> {
-        let rows = self
+        let _guard = self.query_lock.lock().await;
+        if self.read_only { self.client.batch_execute("BEGIN READ ONLY").await.map_err(|e| DriverError::QueryFailed(e.to_string()))?; }
+        let rows_result = self
             .client
             .query(query, params)
             .await
@@ -47,7 +54,9 @@ impl PostgresDriver {
                     e.to_string()
                 };
                 DriverError::QueryFailed(detail)
-            })?;
+            });
+        if self.read_only { self.client.batch_execute("ROLLBACK").await.map_err(|e| DriverError::QueryFailed(e.to_string()))?; }
+        let rows = rows_result?;
 
         let mut results = Vec::new();
         for row in rows {

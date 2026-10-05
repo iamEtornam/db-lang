@@ -1,3 +1,10 @@
+export interface ConnectionOptions {
+  group: string
+  environment: '' | 'development' | 'staging' | 'production'
+  read_only: boolean
+  ssh: { host: string; port: number; username: string; identity_file: string | null } | null
+}
+
 export interface Connection {
   id: string
   name: string
@@ -7,6 +14,7 @@ export interface Connection {
   database: string
   username: string
   password: string
+  options?: ConnectionOptions
   ssl_enabled: boolean
   auth_json: string
   has_password?: boolean
@@ -26,6 +34,7 @@ export interface CreateConnectionRequest {
   database: string
   username: string
   password: string
+  options?: ConnectionOptions
   ssl_enabled: boolean
   auth_json?: string
 }

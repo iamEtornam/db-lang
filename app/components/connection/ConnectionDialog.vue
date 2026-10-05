@@ -8,7 +8,8 @@ import { Label } from '~/components/ui/label'
 import { Separator } from '~/components/ui/separator'
 import { engines, buildConnectionString, isMongoUri, type DatabaseEngine } from '~/constants/engines'
 import { useConnectionsStore } from '~/stores/connections'
-import type { Connection } from '~/types/database'
+import ConnectionOptionsFields from '~/components/connection/ConnectionOptionsFields.vue'
+import type { Connection, ConnectionOptions } from '~/types/database'
 
 const props = defineProps<{
   editConnection?: Connection | null
@@ -29,6 +30,7 @@ const testMessage = ref('')
 function defaultFormForEngine(engine: DatabaseEngine) {
   return {
     name: '',
+    options: { group: '', environment: '', read_only: false, ssh: null } as ConnectionOptions,
     host: engine.id === 'sqlite' ? '' : engine.placeholder.host,
     port: engine.defaultPort?.toString() ?? '',
     database: engine.defaultDatabase,
@@ -46,7 +48,9 @@ const form = ref(defaultFormForEngine(engines[0]!))
 
 // When switching engine type in new-connection mode, reset host/port/db/user defaults
 function onEngineChange(engine: DatabaseEngine) {
+  if (selectedEngine.value.id === engine.id) return
   selectedEngine.value = engine
+  form.value.options.ssh = null
   if (!isEditMode.value) {
     const defaults = defaultFormForEngine(engine)
     form.value.host = defaults.host
@@ -97,6 +101,7 @@ watch(() => props.editConnection, (conn) => {
     selectedEngine.value = engine
     form.value = {
       name: conn.name,
+      options: conn.options ? structuredClone(toRaw(conn.options)) : { group: '', environment: '', read_only: false, ssh: null },
       host: conn.host,
       port: conn.port,
       database: conn.database,
@@ -221,6 +226,7 @@ async function saveConnection() {
       const result = await connectionsStore.updateConnection({
         ...props.editConnection,
         name: form.value.name,
+        options: form.value.options,
         db_type: selectedEngine.value.id,
         host: form.value.host,
         port: form.value.port,
@@ -243,6 +249,7 @@ async function saveConnection() {
     else {
       const result = await connectionsStore.addConnection({
         name: form.value.name,
+        options: form.value.options,
         db_type: selectedEngine.value.id,
         host: form.value.host,
         port: form.value.port,
@@ -292,8 +299,8 @@ watch(open, (val) => {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-w-lg max-h-[90svh] overflow-y-auto">
-      <DialogHeader>
+    <DialogContent class="max-w-lg max-h-[90dvh] flex flex-col overflow-hidden">
+      <DialogHeader class="shrink-0 pr-6">
         <DialogTitle class="flex items-center gap-2">
           <Icon :name="isEditMode ? 'lucide:pencil' : 'lucide:plug'" class="size-5" />
           {{ isEditMode ? 'Edit Connection' : 'New Connection' }}
@@ -303,7 +310,7 @@ watch(open, (val) => {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="space-y-4 py-2">
+      <div class="space-y-4 py-2 overflow-y-auto min-h-0 px-1">
         <!-- Engine selector -->
         <div class="space-y-2">
           <Label>Database Type</Label>
@@ -324,6 +331,8 @@ watch(open, (val) => {
         </div>
 
         <Separator />
+
+        <ConnectionOptionsFields v-model="form.options" :engine="selectedEngine.id" />
 
         <!-- Connection name -->
         <div class="space-y-2">
@@ -571,7 +580,7 @@ watch(open, (val) => {
           :class="testResult === 'success' ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-destructive/10 text-destructive'"
         >
           <Icon :name="testResult === 'success' ? 'lucide:check-circle' : 'lucide:alert-circle'" class="size-4 shrink-0" />
-          <span class="truncate">{{ testMessage }}</span>
+          <span class="break-words">{{ testMessage }}</span>
         </div>
       </div>
 
@@ -581,8 +590,8 @@ watch(open, (val) => {
         <span>{{ saveError }}</span>
       </div>
 
-      <DialogFooter class="gap-2">
-        <Button variant="outline" :disabled="isTesting || isSaving" @click="testConnection">
+      <DialogFooter class="gap-2 shrink-0">
+        <Button variant="ghost" :disabled="isTesting || isSaving" @click="testConnection">
           <Icon v-if="isTesting" name="lucide:loader-2" class="size-4 animate-spin" />
           <Icon v-else name="lucide:zap" class="size-4" />
           Test

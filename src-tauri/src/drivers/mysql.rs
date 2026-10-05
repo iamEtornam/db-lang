@@ -6,11 +6,20 @@ use crate::connection_pool::get_mysql_pool;
 use super::{ColumnInfo, DatabaseDriver, DriverError, PaginatedResult, QueryLanguage, Relationship, TableInfo, strip_pagination};
 
 pub struct MysqlDriver {
+    read_only: bool,
     conn: tokio::sync::Mutex<mysql_async::Conn>,
 }
 
 impl MysqlDriver {
     pub async fn new(conn_str: &str) -> Result<Self, DriverError> {
+        Self::new_with_policy(conn_str, false, false).await
+    }
+    pub async fn new_with_policy(conn_str: &str, read_only: bool, tunneled: bool) -> Result<Self, DriverError> {
+        if tunneled {
+            let options = mysql_async::Opts::from_url(conn_str).map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
+            let conn = mysql_async::Conn::new(options).await.map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
+            return Ok(Self { read_only, conn: tokio::sync::Mutex::new(conn) });
+        }
         let pool = get_mysql_pool()
             .get_or_create(conn_str)
             .map_err(|e| DriverError::ConnectionFailed(e))?;
@@ -19,10 +28,11 @@ impl MysqlDriver {
             .await
             .map_err(|e| DriverError::ConnectionFailed(e.to_string()))?;
 
-        Ok(Self { conn: tokio::sync::Mutex::new(conn) })
+        Ok(Self { read_only, conn: tokio::sync::Mutex::new(conn) })
     }
 
     async fn query_rows(&self, query: &str) -> Result<Vec<Value>, DriverError> {
+        if self.read_only { return self.query_rows_params(query, ()).await; }
         let query_str = query.to_string();
         let mut conn = self.conn.lock().await;
         let result: Vec<mysql_async::Row> = conn
@@ -40,10 +50,16 @@ impl MysqlDriver {
     ) -> Result<Vec<Value>, DriverError> {
         let query_str = query.to_string();
         let mut conn = self.conn.lock().await;
-        let result: Vec<mysql_async::Row> = conn
-            .exec(&query_str, params)
-            .await
-            .map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        let result: Vec<mysql_async::Row> = if self.read_only {
+            let mut options = mysql_async::TxOpts::default();
+            options.with_readonly(Some(true));
+            let mut transaction = conn.start_transaction(options).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+            let rows = transaction.exec(&query_str, params).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+            transaction.rollback().await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+            rows
+        } else {
+            conn.exec(&query_str, params).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?
+        };
 
         Self::rows_to_json(result)
     }
