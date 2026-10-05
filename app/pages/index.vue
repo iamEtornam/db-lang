@@ -12,6 +12,7 @@ import { useHistoryStore } from '~/stores/history'
 import { queryForExecution } from '~/lib/queryWorkspace'
 import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { QueryResult } from '~/types/query'
+import QueryPlanDialog from '~/components/query/QueryPlanDialog.vue'
 
 useHead({ title: 'Query' })
 
@@ -443,6 +444,22 @@ function goToSettings() {
           :disabled="!activeConnection || isExecuting || isTranslating"
           @execute="executeQuery(1, $event)"
         />
+
+        <div class="flex items-center gap-2">
+          <Button
+            :disabled="!generatedQuery.trim() || isExecuting"
+            class="gap-1.5"
+            @click="executeQuery()"
+          >
+            <Icon v-if="isExecuting" name="lucide:loader-2" class="size-4 animate-spin" />
+            <Icon v-else name="lucide:play" class="size-4" />
+            Re-run
+            <kbd class="hidden sm:inline-flex ml-1 pointer-events-none h-5 select-none items-center gap-1 rounded border border-primary-foreground/30 bg-primary-foreground/20 px-1.5 font-mono text-[10px] text-primary-foreground/80">
+              ⌘↵
+            </kbd>
+          </Button>
+          <QueryPlanDialog v-if="activeConnection" :connection-id="activeConnection.id" :engine="activeConnection.db_type" :query="generatedQuery" />
+        </div>
         <p v-if="storageError" role="alert" class="text-sm text-destructive">{{ storageError }}</p>
       </div>
 
