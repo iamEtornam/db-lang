@@ -146,6 +146,7 @@ export const useConnectionsStore = defineStore('connections', () => {
           })
 
           colMap[table.name] = columns
+          if (table.schema) colMap[`${table.schema}.${table.name}`] = columns
 
           const colDescriptions = columns.map((col) => {
             let desc = `    - "${col.name}" (${col.data_type})`

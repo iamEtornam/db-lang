@@ -183,6 +183,11 @@ fn escape_mysql_identifier(name: &str) -> String {
 
 #[async_trait]
 impl DatabaseDriver for MysqlDriver {
+    async fn inspect_plan(&self, statement: &str) -> Result<Vec<Value>, DriverError> {
+        // Prepared protocol rejects multiple statements independently of SQL mode.
+        self.query_rows_params(statement, ()).await
+    }
+
     async fn execute_query(&self, query: &str) -> Result<Vec<Value>, DriverError> {
         self.query_rows(query).await
     }
@@ -256,6 +261,12 @@ impl DatabaseDriver for MysqlDriver {
                 AND c.COLUMN_NAME = kcu.COLUMN_NAME
                 AND c.TABLE_SCHEMA = kcu.TABLE_SCHEMA
                 AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+                AND kcu.CONSTRAINT_NAME = (
+                    SELECT MIN(ref.CONSTRAINT_NAME)
+                    FROM information_schema.key_column_usage ref
+                    WHERE ref.TABLE_SCHEMA = c.TABLE_SCHEMA AND ref.TABLE_NAME = c.TABLE_NAME
+                      AND ref.COLUMN_NAME = c.COLUMN_NAME AND ref.REFERENCED_TABLE_NAME IS NOT NULL
+                )
             WHERE c.TABLE_NAME = ? AND c.TABLE_SCHEMA = DATABASE()
             ORDER BY c.ORDINAL_POSITION";
 
@@ -278,6 +289,8 @@ impl DatabaseDriver for MysqlDriver {
     async fn get_relationships(&self) -> Result<Vec<Relationship>, DriverError> {
         let rows = self.query_rows(
             "SELECT
+                kcu.TABLE_SCHEMA as source_schema,
+                kcu.REFERENCED_TABLE_SCHEMA as target_schema,
                 kcu.TABLE_NAME as source_table,
                 kcu.COLUMN_NAME as source_column,
                 kcu.REFERENCED_TABLE_NAME as target_table,
@@ -286,6 +299,7 @@ impl DatabaseDriver for MysqlDriver {
             JOIN information_schema.table_constraints tc
                 ON kcu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
                 AND kcu.TABLE_SCHEMA = tc.TABLE_SCHEMA
+                AND kcu.TABLE_NAME = tc.TABLE_NAME
             WHERE tc.CONSTRAINT_TYPE = 'FOREIGN KEY'
               AND kcu.TABLE_SCHEMA = DATABASE()"
         ).await?;
@@ -294,6 +308,8 @@ impl DatabaseDriver for MysqlDriver {
             let target_table = row["target_table"].as_str()?.to_string();
             let target_column = row["target_column"].as_str()?.to_string();
             Some(Relationship {
+                source_schema: row["source_schema"].as_str().map(str::to_owned),
+                target_schema: row["target_schema"].as_str().map(str::to_owned),
                 source_table: row["source_table"].as_str().unwrap_or("").to_string(),
                 source_column: row["source_column"].as_str().unwrap_or("").to_string(),
                 target_table,

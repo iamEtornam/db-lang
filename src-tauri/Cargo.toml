@@ -53,3 +53,6 @@ calamine = { version = "0.36.1", features = ["chrono"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 duckdb = { version = "=1.10506.0", features = ["bundled", "json", "parquet"] }
 tempfile = "3"
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
