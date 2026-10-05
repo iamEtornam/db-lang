@@ -99,6 +99,11 @@ pub struct PaginatedResult {
 pub trait DatabaseDriver: Send + Sync {
     async fn execute_query(&self, query: &str) -> Result<Vec<Value>, DriverError>;
 
+    /// The caller supplies a validated EXPLAIN statement, never ANALYZE.
+    async fn inspect_plan(&self, statement: &str) -> Result<Vec<Value>, DriverError> {
+        self.execute_query(statement).await
+    }
+
     async fn execute_query_paginated(
         &self,
         query: &str,

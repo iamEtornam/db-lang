@@ -7,6 +7,7 @@ mod export;
 mod gemini;
 mod schema_kb;
 mod scripts;
+mod query_plan;
 
 use app_db::{init_app_database, get_app_database, DbConnectionRecord};
 use drivers::{create_driver, TableInfo, ColumnInfo, PaginatedResult};
@@ -152,6 +153,15 @@ async fn query_db(connection_id: &str, query: &str) -> Result<String, String> {
     let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
     let rows = driver.execute_query(query).await.map_err(|e| e.to_string())?;
     serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inspect_query_plan(connection_id: &str, query: &str) -> Result<query_plan::QueryPlan, String> {
+    let (engine, conn_str) = resolve_connection(connection_id)?;
+    let (statement, format) = query_plan::explain_statement(&engine, query)?;
+    let driver = create_driver(&engine, &conn_str).await.map_err(|e| e.to_string())?;
+    let rows = driver.inspect_plan(&statement).await.map_err(|e| e.to_string())?;
+    Ok(query_plan::QueryPlan { engine, format, rows })
 }
 
 /// Run a saved or built-in script against a connection. Params are a map of
@@ -1245,6 +1255,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Database operations
             query_db,
+            inspect_query_plan,
             query_db_paginated,
             execute_sql_statement,
             execute_sql_batch,

@@ -149,6 +149,11 @@ fn escape_mysql_identifier(name: &str) -> String {
 
 #[async_trait]
 impl DatabaseDriver for MysqlDriver {
+    async fn inspect_plan(&self, statement: &str) -> Result<Vec<Value>, DriverError> {
+        // Prepared protocol rejects multiple statements independently of SQL mode.
+        self.query_rows_params(statement, ()).await
+    }
+
     async fn execute_query(&self, query: &str) -> Result<Vec<Value>, DriverError> {
         self.query_rows(query).await
     }

@@ -14,6 +14,7 @@
 
 ## ✨ Features
 
+- **Visual query plans**: Inspect estimated PostgreSQL, MySQL/MariaDB, and SQLite plans from the query workspace. Expand the operation tree, compare estimated costs and rows, inspect step details, or read raw output. Query plan inspection does not enable ANALYZE.
 - **🗣️ AI-Powered Query Generation**: Leveraging Google's **Gemini Pro**, describe your data needs (e.g., *"Find all users who signed up last week and spent over $500"*), and Query Studio instantly crafts the precise SQL.
 - **🔌 Multi-Database Support**: Connect effortlessly to **PostgreSQL**, **MySQL**, **SQLite**, **MongoDB**, **Redis**, **Firebase Firestore**, and **Firebase Realtime Database**.
 - **🧠 Logic Breakdown**: Don't just copy-paste code. Query Studio provides a step-by-step plain-English explanation of the generated SQL logic.

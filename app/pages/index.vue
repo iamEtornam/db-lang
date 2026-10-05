@@ -10,6 +10,7 @@ import { useConnectionsStore } from '~/stores/connections'
 import { useHistoryStore } from '~/stores/history'
 import type { PaginatedResult, ResultExplanation } from '~/types/database'
 import type { QueryResult } from '~/types/query'
+import QueryPlanDialog from '~/components/query/QueryPlanDialog.vue'
 
 useHead({ title: 'Query' })
 
@@ -432,6 +433,7 @@ function goToSettings() {
               ⌘↵
             </kbd>
           </Button>
+          <QueryPlanDialog v-if="activeConnection" :connection-id="activeConnection.id" :engine="activeConnection.db_type" :query="generatedQuery" />
         </div>
       </div>
 
