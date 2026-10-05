@@ -1,5 +1,5 @@
 use std::ops::ControlFlow;
-use sqlparser::{ast::{Query, SetExpr, Statement, Visit, Visitor}, dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect}, parser::Parser, tokenizer::{Token, Tokenizer}};
+use sqlparser::{ast::{Query, SetExpr, Statement, Visit, Visitor}, dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect}, parser::Parser, tokenizer::{Location, Token, Tokenizer}};
 
 pub const POLICY_ERROR: &str = "This connection is read-only. Disable read-only in its settings to permit writes.";
 
@@ -7,7 +7,7 @@ pub fn check_query(engine: &str, query: &str) -> Result<(), String> {
     if query.len() > 1024 * 1024 { return Err("Query exceeds the 1 MiB limit".into()); }
     match engine {
         "postgres" | "mysql" | "mariadb" | "sqlite" => {
-            let dialect: Box<dyn Dialect> = match engine { "postgres" => Box::new(PostgreSqlDialect {}), "sqlite" => Box::new(SQLiteDialect {}), _ => Box::new(MySqlDialect {}) };
+            let dialect = sql_dialect(engine);
             let tokens = Tokenizer::new(dialect.as_ref(), query).tokenize().map_err(|e| e.to_string())?;
             if tokens.iter().any(|t| matches!(t, Token::Whitespace(sqlparser::tokenizer::Whitespace::MultiLineComment(comment)) if comment.starts_with('!') || comment.starts_with("M!"))) { return Err(POLICY_ERROR.into()); }
             let statements = Parser::parse_sql(dialect.as_ref(), query).map_err(|e| format!("Read-only query validation: {e}"))?;
@@ -32,6 +32,23 @@ pub fn check_query(engine: &str, query: &str) -> Result<(), String> {
         _ => return Err("Read-only policy is unavailable for this engine".into()),
     }
     Ok(())
+}
+fn sql_dialect(engine: &str) -> Box<dyn Dialect> {
+    match engine { "postgres" => Box::new(PostgreSqlDialect {}), "sqlite" => Box::new(SQLiteDialect {}), _ => Box::new(MySqlDialect {}) }
+}
+/// Remove only real SQL terminator tokens; literals/comments retain their exact bytes.
+/// Callers validate the single read-only statement before wrapping it as a subquery.
+pub fn without_terminators(engine: &str, query: &str) -> Result<String, String> {
+    let dialect = sql_dialect(engine);
+    let tokens = Tokenizer::new(dialect.as_ref(), query).tokenize_with_location().map_err(|_| "Could not tokenize query")?;
+    let positions: std::collections::HashSet<_> = tokens.iter().filter(|token| token.token == Token::SemiColon).map(|token| token.span.start).collect();
+    let mut location = Location::new(1, 1);
+    let mut result = String::with_capacity(query.len());
+    for character in query.chars() {
+        if !positions.contains(&location) { result.push(character); }
+        if character == '\n' { location.line += 1; location.column = 1; } else { location.column += 1; }
+    }
+    Ok(result)
 }
 fn contains_write_stage(value: &serde_json::Value) -> bool {
     match value {

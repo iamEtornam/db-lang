@@ -133,6 +133,12 @@ pub struct AppDatabase {
 }
 
 impl AppDatabase {
+    /// Automation never creates or migrates the desktop database.
+    pub fn open_read_only(path: &std::path::Path) -> Result<Self, AppDbError> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self { conn: Mutex::new(conn) })
+    }
+
     pub fn new(app_data_dir: PathBuf) -> Result<Self, AppDbError> {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| {
             AppDbError::DatabaseError(format!("Failed to create app data directory: {}", e))

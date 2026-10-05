@@ -1,4 +1,5 @@
 mod app_db;
+pub mod automation;
 mod commands;
 mod connection_pool;
 mod connection_options;
