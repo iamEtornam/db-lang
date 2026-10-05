@@ -9,6 +9,7 @@ mod drivers;
 mod export;
 mod gemini;
 mod schema_kb;
+mod schema_diff;
 mod scripts;
 
 use app_db::{init_app_database, get_app_database, DbConnectionRecord};
@@ -1343,6 +1344,7 @@ pub fn run() {
             disconnect_ssh_tunnel,
             // Schema exploration
             get_tables,
+            schema_diff::get_comparison_schema,
             get_table_columns,
             preview_table_data,
             // AI translation & explanation

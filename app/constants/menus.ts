@@ -19,6 +19,11 @@ export const navigationMenus: NavGroup[] = [
         icon: 'lucide:bar-chart-3',
       },
       {
+        title: 'Compare schemas',
+        href: '/compare',
+        icon: 'lucide:table-2',
+      },
+      {
         title: 'History',
         href: '/history',
         icon: 'lucide:clock',
