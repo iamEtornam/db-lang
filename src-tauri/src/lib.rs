@@ -7,6 +7,7 @@ mod ssh_tunnel;
 mod database;
 mod drivers;
 mod export;
+mod data_tools;
 mod gemini;
 mod schema_kb;
 mod scripts;
@@ -1306,6 +1307,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            data_tools::preview_import_file,
+            data_tools::query_local_file,
+            data_tools::import_table_file,
             // Database operations
             query_db,
             query_db_paginated,

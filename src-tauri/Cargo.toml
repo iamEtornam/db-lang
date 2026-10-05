@@ -47,3 +47,9 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 sqlparser = { version = "0.63", features = ["visitor"] }
+
+csv = "1.4"
+calamine = { version = "0.36.1", features = ["chrono"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+duckdb = { version = "=1.10506.0", features = ["bundled", "json", "parquet"] }
+tempfile = "3"

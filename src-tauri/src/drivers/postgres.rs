@@ -153,6 +153,21 @@ impl PostgresDriver {
         Ok(results)
     }
 
+    pub async fn import_rows(&mut self, table: &str, columns: &[String], types: &[String], rows: &[Vec<Option<String>>]) -> Result<(), DriverError> {
+        let names = columns.iter().map(|name| super::quote_identifier("postgres", name, None)).collect::<Vec<_>>().join(", ");
+        let tx = self.client.transaction().await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+        for (batch_index, batch) in rows.chunks(100).enumerate() {
+            let values = batch.iter().enumerate().map(|(row, _)| {
+                let parameters = types.iter().enumerate().map(|(column, data_type)| format!("CAST(${}::text AS {data_type})", row * columns.len() + column + 1)).collect::<Vec<_>>().join(", ");
+                format!("({parameters})")
+            }).collect::<Vec<_>>().join(", ");
+            let statement = tx.prepare(&format!("INSERT INTO {table} ({names}) VALUES {values}")).await.map_err(|e| DriverError::QueryFailed(e.to_string()))?;
+            let parameters: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = batch.iter().flatten().map(|value| value as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+            tx.execute(&statement, &parameters).await.map_err(|e| DriverError::QueryFailed(format!("Import rows {} through {}: {e}", batch_index * 100 + 1, batch_index * 100 + batch.len())))?;
+        }
+        tx.commit().await.map_err(|e| DriverError::QueryFailed(e.to_string()))
+    }
+
     /// Run N statements atomically inside a single transaction. If any
     /// statement fails the whole batch rolls back per Postgres semantics.
     /// Returns the number of statements actually run (not row counts —
